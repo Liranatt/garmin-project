@@ -1,57 +1,112 @@
 # Garmin Health Intelligence
 
-AI-powered health analytics that goes far beyond what Garmin Connect shows you. Fetches biometric data from Garmin, computes statistical correlations, and runs 9 specialized AI agents to deliver actionable health insights — all stored in PostgreSQL (Heroku) and presented via an interactive dashboard.
+A personal health analytics system that applies **real statistical methods** — not just averages and charts — to Garmin biometric data, then feeds the results to **9 specialized AI agents** for interpretation.
+
+> **The core idea:** raw wearable data → 8-step statistical pipeline → structured text summary → 9 AI agents that actually understand the math they're reading.
 
 ---
 
-## What This Does vs Garmin Connect
+## The Math: 8-Step Computation Pipeline
 
-| Capability | Garmin Connect | This Project |
-|---|---|---|
-| Raw metrics display | Yes | Yes |
-| Week-over-week trends | Limited | Full comparison |
-| Cross-metric correlations | No | Pearson + lagged |
-| AI-powered insights | No | 9 specialized agents |
-| Statistical anomaly detection | No | Z-scores + Shapiro-Wilk |
-| Training load analysis (ACWR) | Basic | Acute/chronic ratio |
-| Custom SQL queries | No | Full database access |
-| Automated weekly reports | No | Cron / GitHub Actions |
-| Interactive Plotly charts | No | Dashboard |
-| Body battery patterns | Basic | Charge/drain/transitions |
-| Recovery optimization | No | Sleep↔readiness analysis |
-| Overtraining detection | No | HRV + load patterns |
+Every weekly run executes the full pipeline from `correlation_engine.py` (~1,300 lines of pure computation, zero AI):
+
+### Layer 0 — Data Ingestion
+
+Load `daily_metrics` from PostgreSQL, auto-discover all numeric columns (~55–65 metrics depending on available data), drop columns with insufficient variance.
+
+### Layer 1 — Correlation Matrices
+
+| Step | Method | What it produces |
+|------|--------|-----------------|
+| **1a** | Pearson $r$ (same-day) | $N \times N$ correlation matrix across all metric pairs. Each cell: $(r, p)$. Filters: $\|r\| \geq 0.3$, $p < 0.05$ |
+| **1b** | Pearson $r$ (lag-1) | Shifted matrix — does yesterday's metric $X_{t-1}$ predict today's metric $Y_t$? Same thresholds. These are the **predictive** correlations |
+
+### Layer 2 — Statistical Depth
+
+| Step | Method | What it produces |
+|------|--------|-----------------|
+| **2a** | Shapiro-Wilk | Normality test per metric. $W$ statistic + $p$-value. Flags non-normal distributions where Pearson assumptions may not hold |
+| **2b** | AR(1) persistence | Autoregressive coefficient $\phi_1$ for each metric: $X_t = \phi_1 X_{t-1} + \varepsilon_t$. High $\phi_1$ → metric has momentum; low → noisy/random |
+| **2c** | Z-score anomalies | $z_i = (x_i - \bar{x}) / s$. Any $\|z\| > 2.0$ flagged with date, metric, direction. These are your "unusual days" |
+| **2d** | Conditioned AR(1) | $Y_t = \beta_0 + \beta_1 Y_{t-1} + \beta_2 X_t + \varepsilon$, reported with **adjusted $R^2$**. Does adding a second metric improve the autoregressive fit? Filters: adj. $R^2 > 0.10$, $p < 0.05$ |
+| **2e** | Markov transition matrices | Discretize each metric into {LOW, MID, HIGH} via terciles. Build $3 \times 3$ transition matrices $P_{ij}$ conditioned on a second metric's state. Apply **KL-divergence** to detect state-dependent dynamics |
+
+### Adaptive Kernel Smoothing (Markov)
+
+Raw transition counts are sparse early on. Smoothing prevents the matrix from being dominated by sampling noise:
+
+$$\alpha = \frac{0.50}{\sqrt{n}}, \quad \text{clamped to } [0.02,\; 0.25]$$
+
+- $n = 27$ (one month) → $\alpha \approx 0.096$ — moderate smoothing
+- $n = 365$ (one year) → $\alpha \approx 0.026$ — near-raw counts
+- KL-divergence gated: requires $\geq 5$ transitions per conditioning level (`MIN_TRANSITIONS_KL = 5`)
+
+**Confidence tiers** on every Markov result: HIGH ($\geq 100$ transitions), GOOD ($\geq 30$), MODERATE ($\geq 15$), PRELIMINARY ($< 15$).
+
+### Layer 3 — Natural Language Summary
+
+Pure Python `f-string` formatting (no AI). Converts all numeric results into ~2–3 KB of structured text using hardcoded thresholds:
+- $|r| > 0.7$ → "strong", $> 0.5$ → "moderate"
+- $R^2 > 0.4$ → "strong model", $> 0.2$ → "moderate"
+- KL $> 0.10$ → "STRONG divergence", $> 0.05$ → "moderate"
+
+This text becomes the **context window** for all 9 agents — they read the summary, not the raw numbers.
+
+### Multi-Period Benchmarks
+
+The pipeline runs across sliding windows: **7d → 14d → 30d → 60d → 90d → 180d → 365d** (as data permits). Each window gets its own Layer 1–3 output. Benchmark comparison classifies each correlation as:
+
+| Pattern | Definition |
+|---------|-----------|
+| **ROBUST** | Present across $\geq 3$ windows with consistent sign |
+| **STABLE** | Present in longest + one mid-range window |
+| **EMERGING** | Only appears in recent windows |
+| **FRAGILE** | Appears/disappears inconsistently |
+
+---
+
+## The Agents: 9 Specialists on Gemini 2.5 Flash
+
+Each agent is a [CrewAI](https://github.com/crewAIInc/crewAI) agent backed by `gemini-2.5-flash` (temperature 0.3). They share 4 tools for live database queries and receive the Layer 3 summary + benchmark comparison as context.
+
+| # | Agent | What it does |
+|---|-------|-------------|
+| 1 | **Matrix Analyst** | Reads the correlation matrices and statistical summaries. Identifies which relationships are real vs. noise |
+| 2 | **Benchmark Comparator** | Compares patterns across time windows (7d→365d). Flags what's ROBUST vs. EMERGING |
+| 3 | **Pattern Detective** | Discovers hidden or non-obvious relationships in the data |
+| 4 | **Performance Optimizer** | Translates statistical findings into training recommendations |
+| 5 | **Recovery Specialist** | Analyzes recovery dynamics — body battery recharge, HRV bounce-back, overtraining signals |
+| 6 | **Trend Forecaster** | Projects current trends forward, flags concerning directions |
+| 7 | **Lifestyle Analyst** | Links lifestyle factors (hydration, stress, steps) to outcomes |
+| 8 | **Sleep Analyst** | Deep sleep architecture — duration, deep/REM/light as % of total vs. clinical norms, consistency (CV > 15% = inconsistent), next-day impact on readiness and body battery |
+| 9 | **Weakness Identifier** | Synthesizes all findings into the #1 bottleneck + actionable quick wins |
+
+**Agent tools:**
+- `run_sql_query` — Execute SQL against the health DB (read-only guard: rejects INSERT/UPDATE/DELETE)
+- `calculate_correlation` — Compute Pearson $r$ between any two metrics on the fly
+- `find_best_days` — Retrieve days with optimal metric values
+- `analyze_pattern` — Detect patterns over configurable time windows
 
 ---
 
 ## Architecture
 
 ```
-Garmin Watch → Garmin Connect → Garmin API
-                                     ↓
-                           garth library (OAuth)
-                                     ↓
-                     EnhancedGarminDataFetcher
-                        (src/enhanced_fetcher.py)
-                                     ↓
-                           PostgreSQL on Heroku (UPSERT)
-                          ┌──────────┴──────────┐
-                          ↓                     ↓
-                CorrelationEngine        garmin_merge.py
-               (src/correlation_engine.py)   (bulk enrichment)
-                          ↓
-                 AdvancedHealthAgents
-                (src/enhanced_agents.py)
-                9 CrewAI agents + Gemini
-                          ↓
-                weekly_summaries table
-                          ↓
-           ┌──────────────┴──────────────┐
-           ↓                             ↓
-   Streamlit Dashboard          CLI / Direct SQL
-    (src/dashboard.py)
-           ↓
-  HealthDataVisualizer
-   (src/visualizations.py)
+Garmin Watch → Garmin Connect → Garmin API (garth OAuth)
+                                       ↓
+                         EnhancedGarminDataFetcher → PostgreSQL (Heroku, UPSERT)
+                                                          ↓
+                    ┌─────────────────────────────────────┴──────────────┐
+                    ↓                                                    ↓
+          CorrelationEngine (8 steps)                           garmin_merge.py
+          Layer 0 → 1a,1b → 2a–2e → 3                        (bulk enrichment)
+          × 7 benchmark windows                                         
+                    ↓                                                    
+      Layer 3 summary + benchmark comparison                             
+                    ↓                                                    
+          9 CrewAI Agents (Gemini 2.5 Flash)                             
+                    ↓                                                    
+          weekly_summaries table → Streamlit Dashboard / CLI
 ```
 
 ---
@@ -174,38 +229,13 @@ Training days are classified as **HARD / MODERATE / EASY / REST** based on activ
 
 ### Correlation Engine (`src/correlation_engine.py`)
 
-4-layer statistical analysis computed from `daily_metrics`:
+See **[The Math: 8-Step Computation Pipeline](#the-math-8-step-computation-pipeline)** above for full details.
 
-| Layer | Analysis | Output |
-|-------|----------|--------|
-| **0** | Data loading, cleaning, auto-discovery of numeric columns | Clean DataFrame |
-| **1** | NxN Pearson correlations (same-day + lag-1), p-values | Correlation matrices |
-| **2** | AR(1) persistence, normality (Shapiro-Wilk), anomaly detection (z-scores), conditioned AR(1), Markov transition matrices, KL-divergence | Statistical summaries |
-| **3** | Natural-language summary (~2-3 KB) | Text for AI agents |
-
-Uses **adaptive kernel-smoothed** Markov matrices (α = BASE/√n, clamped to [0.02, 0.25] — heavy smoothing when sparse, light when data is large) and adjusted R². KL-divergence gated: requires ≥5 transitions per conditioning level. Results stored in `matrix_summaries` table.
+~1,300 lines of pure statistical computation. No AI. Results stored in `matrix_summaries` table (1 row/day via UPSERT).
 
 ### AI Agents (`src/enhanced_agents.py`)
 
-9 specialized CrewAI agents powered by Google Gemini (`gemini-2.5-flash`):
-
-| Agent | Role |
-|-------|------|
-| **Matrix Analyst** | Interprets correlation matrices and statistical patterns |
-| **Multi-Scale Benchmark Analyst** | Compares patterns across time windows (7d→365d), classifies as ROBUST/STABLE/EMERGING/FRAGILE |
-| **Pattern Detective** | Discovers hidden relationships in the data |
-| **Performance Optimizer** | Recommends training and recovery strategies |
-| **Recovery Specialist** | Analyzes recovery bounce-back and overtraining signals |
-| **Trend Forecaster** | Projects trends and flags concerning directions |
-| **Lifestyle Analyst** | Links lifestyle choices to health outcomes |
-| **Sleep Analyst** | Deep sleep architecture analysis — duration, deep/REM/light breakdown, consistency, next-day impact |
-| **Weakness Identifier** | Synthesizes all findings into #1 bottleneck + quick wins |
-
-Each agent has access to 4 tools for direct database queries:
-- `run_sql_query` — Execute SQL against the health database (read-only guard)
-- `calculate_correlation` — Compute correlation between any two metrics
-- `find_best_days` — Find days with optimal metric values
-- `analyze_pattern` — Detect patterns over time windows
+See **[The Agents: 9 Specialists](#the-agents-9-specialists-on-gemini-25-flash)** above for the full roster and tools.
 
 **Analysis modes:**
 
