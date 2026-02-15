@@ -1,0 +1,16 @@
+# Core Dependencies
+crewai>=0.11.0
+garth>=0.6.3
+psycopg2-binary>=2.9.9
+pandas>=2.0.0
+
+# Visualization & Dashboard
+plotly>=5.18.0
+streamlit>=1.29.0
+numpy>=1.24.0
+
+# Data Analysis & Statistics
+scipy>=1.11.0
+
+# Utilities
+python-dotenv>=1.0.0

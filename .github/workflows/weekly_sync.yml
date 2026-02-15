@@ -1,0 +1,47 @@
+name: Weekly Health Sync
+on:
+  schedule:
+    - cron: '0 6 * * 0'  # Every Sunday 06:00 UTC
+  workflow_dispatch:       # Manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore garth session
+        run: |
+          mkdir -p ~/.garth
+          echo '${{ secrets.GARTH_SESSION }}' | base64 -d > ~/.garth/oauth1_token.json || true
+          echo '${{ secrets.GARTH_SESSION_OAUTH2 }}' | base64 -d > ~/.garth/oauth2_token.json || true
+
+      - name: Run weekly sync
+        env:
+          POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GARTH_HOME: ~/.garth
+        working-directory: src
+        run: python weekly_sync.py --days 7
+
+      - name: Save garth session
+        if: always()
+        run: |
+          if [ -f ~/.garth/oauth1_token.json ]; then
+            echo "GARTH_SESSION=$(base64 -w0 ~/.garth/oauth1_token.json)" >> $GITHUB_ENV
+          fi
+          if [ -f ~/.garth/oauth2_token.json ]; then
+            echo "GARTH_SESSION_OAUTH2=$(base64 -w0 ~/.garth/oauth2_token.json)" >> $GITHUB_ENV
+          fi
