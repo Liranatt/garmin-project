@@ -28,6 +28,7 @@ import garth
 from datetime import date, timedelta, datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -225,6 +226,22 @@ class EnhancedGarminDataFetcher:
 
     # ─── Raw Data Fetching (proven connectapi endpoints) ──────
 
+    @staticmethod
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+        reraise=True,
+    )
+    def _api_call(endpoint: str) -> Any:
+        """Call Garmin connectapi with automatic retry + exponential backoff.
+
+        Retries up to 3 times on transient network errors (ConnectionError,
+        TimeoutError, OSError) with exponential wait (2s, 4s, 8s…, max 30s).
+        Non-transient errors (404, auth) raise immediately.
+        """
+        return garth.client.connectapi(endpoint)
+
     def _fetch_all_sources(self, start: date, end: date,
                            days: int) -> Dict[str, Any]:
         """Fetch from all proven Garmin API endpoints."""
@@ -233,7 +250,7 @@ class EnhancedGarminDataFetcher:
 
         # Heart Rate
         try:
-            hr = garth.client.connectapi(
+            hr = self._api_call(
                 f"/usersummary-service/stats/heartRate/daily/{start}/{end}")
             data["heart_rate"] = pd.json_normalize(hr)
             log.info(f"   ✅ Heart Rate:           {len(data['heart_rate'])} days")
@@ -242,7 +259,7 @@ class EnhancedGarminDataFetcher:
 
         # Body Battery
         try:
-            bb = garth.client.connectapi(
+            bb = self._api_call(
                 f"/wellness-service/wellness/bodyBattery/reports/daily"
                 f"?startDate={start}&endDate={end}")
             data["body_battery"] = pd.json_normalize(bb)
@@ -252,7 +269,7 @@ class EnhancedGarminDataFetcher:
 
         # Steps
         try:
-            steps = garth.client.connectapi(
+            steps = self._api_call(
                 f"/usersummary-service/stats/steps/daily/{start}/{end}")
             data["steps_raw"] = pd.json_normalize(steps)
             log.info(f"   ✅ Steps:                {len(data['steps_raw'])} days")
@@ -261,7 +278,7 @@ class EnhancedGarminDataFetcher:
 
         # Hydration
         try:
-            hyd = garth.client.connectapi(
+            hyd = self._api_call(
                 f"/usersummary-service/usersummary/hydration/daily/{start}/{end}")
             data["hydration"] = pd.json_normalize(hyd)
             log.info(f"   ✅ Hydration:            {len(data['hydration'])} days")
@@ -270,7 +287,7 @@ class EnhancedGarminDataFetcher:
 
         # Training Readiness
         try:
-            tr = garth.client.connectapi(
+            tr = self._api_call(
                 f"/metrics-service/metrics/trainingreadiness/{start}/{end}")
             data["training_readiness"] = pd.json_normalize(tr)
             log.info(f"   ✅ Training Readiness:   {len(data['training_readiness'])} entries")
@@ -279,7 +296,7 @@ class EnhancedGarminDataFetcher:
 
         # HRV (connectapi — returns dict with hrvSummaries list)
         try:
-            hrv_raw = garth.client.connectapi(
+            hrv_raw = self._api_call(
                 f"/hrv-service/hrv/daily/{start}/{end}")
             hrv_list = (hrv_raw.get("hrvSummaries", [])
                         if isinstance(hrv_raw, dict) else [])
@@ -293,7 +310,7 @@ class EnhancedGarminDataFetcher:
 
         # Stress
         try:
-            stress = garth.client.connectapi(
+            stress = self._api_call(
                 f"/usersummary-service/stats/stress/daily/{start}/{end}")
             if stress:
                 data["stress"] = pd.json_normalize(stress)
@@ -307,7 +324,7 @@ class EnhancedGarminDataFetcher:
             for d in range(days + 1):
                 day = start + timedelta(days=d)
                 try:
-                    s = garth.client.connectapi(
+                    s = self._api_call(
                         f"/wellness-service/wellness/dailySleepData"
                         f"?date={day}&nonSleepBufferMinutes=60")
                     if isinstance(s, dict) and s.get("dailySleepDTO"):
@@ -787,7 +804,7 @@ class EnhancedGarminDataFetcher:
             # Body-part detection from exercise sets
             if act_type == "strength_training" and act_id:
                 try:
-                    raw = garth.connectapi(
+                    raw = self._api_call(
                         f"/activity-service/activity/{act_id}/exerciseSets")
                     if isinstance(raw, dict):
                         for ex_set in raw.get("exerciseSets", []):

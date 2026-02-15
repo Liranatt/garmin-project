@@ -1,64 +1,151 @@
 # Garmin Health Intelligence
 
-A personal health analytics system that applies **real statistical methods** — not just averages and charts — to Garmin biometric data, then feeds the results to **9 specialized AI agents** for interpretation.
+A personal health analytics system that applies **real statistical methods** to Garmin wearable data, then feeds the results to **9 specialized AI agents** for interpretation humans can act on.
 
-> **The core idea:** raw wearable data → 8-step statistical pipeline → structured text summary → 9 AI agents that actually understand the math they're reading.
+> **Core idea:** raw wearable data → 8-step statistical pipeline → structured text summary → 9 AI agents that actually understand the math they're reading.
 
 ---
 
-## The Math: 8-Step Computation Pipeline
+## The Problem
 
-Every weekly run executes the full pipeline from `correlation_engine.py` (~1,300 lines of pure computation, zero AI):
+Garmin Connect gives you charts and numbers, but it doesn't tell you **why** your training readiness dropped, **whether** the pattern is real or noise, or **what** actually predicts your good days vs. bad days. Specifically:
+
+1. **No cross-metric analysis.** Garmin shows each metric in isolation. It never asks: "does your HRV predict tomorrow's training readiness?" or "does high stress today predict poor sleep tonight?"
+
+2. **No statistical rigor.** When Garmin says a trend is "improving", it's comparing two averages with no significance test, no confidence interval, no control for sample size. With 7 data points, almost anything looks like a trend.
+
+3. **No temporal dynamics.** Lag-1 effects (yesterday→today), autoregressive persistence (does a metric have momentum?), and state-dependent transitions (does being in a "low HRV" state make it likely you stay there?) are invisible in Garmin's UI.
+
+4. **Date gaps corrupt the math.** If you don't wear the watch for 3 days, Garmin stores nothing for those days. A naive `.shift(1)` then pairs Monday's data with Friday's data as if they were consecutive — producing **silently wrong** correlations, AR(1) fits, and Markov transitions. This is not a Garmin bug; it's a fundamental data-processing pitfall that most wearable analytics tools ignore.
+
+5. **No actionable synthesis.** Even if you could see all the statistics, you'd still need someone (or something) to read them and say: "your #1 bottleneck right now is poor deep sleep, and here's what to do about it."
+
+---
+
+## How I Tackled It
+
+### Architecture
+
+```
+Garmin Watch → Garmin Connect → Garmin API (garth OAuth)
+                                       ↓
+                      EnhancedGarminDataFetcher → PostgreSQL (Heroku, UPSERT)
+                         ↑ tenacity retry ×3                    ↓
+                    ┌─────────────────────────────────────┴──────────────┐
+                    ↓                                                    ↓
+          CorrelationEngine (8 steps)                           garmin_merge.py
+          Layer 0 → 1a,1b → 2a–2e → 3                        (bulk enrichment)
+          × 9 benchmark windows
+                    ↓
+      Layer 3 summary + benchmark comparison
+                    ↓
+          9 CrewAI Agents (Gemini 2.5 Flash)
+          3 batches × 3 threads (parallel)
+                    ↓
+          weekly_summaries table → Streamlit Dashboard / CLI
+```
+
+### Layer-by-layer approach
+
+Instead of throwing all the data at an LLM and hoping for the best, the system separates **computation** from **interpretation**:
+
+- **Layers 0–3** (`correlation_engine.py`, ~1,400 lines of pure Python + numpy + scipy) do all the math. No AI.  Zero LLM calls. Every number is reproducible and testable.
+- **Layer 4** (9 CrewAI agents on Gemini 2.5 Flash) reads the structured text summary produced by Layer 3 and interprets it with domain knowledge and live SQL access to the raw data.
+
+This means the AI agents never hallucinate the statistics — they're reading pre-computed, validated results. They can only hallucinate the **interpretation**, and even that is anchored to real numbers.
+
+### The date-gap fix
+
+The hardest bug to find. `.shift(1)` assumes consecutive rows = consecutive days, but Garmin data has gaps (watch off, travel, charging). The fix has two parts:
+
+1. **In Layer 0:** after loading from PostgreSQL, enforce daily continuity with `.asfreq('D')`. This inserts NaN placeholder rows for every missing date, so `.shift(1)` on Feb 6 correctly sees NaN (from the missing Feb 5), not Feb 2's real value.
+
+2. **In Markov transitions:** even with gap-fill, Markov transition counting must check `|date_{t+1} − date_t| = 1 day` before incrementing the transition matrix. Values separated by >1 day are **not** state transitions — they're disconnected observations.
+
+### Retry logic
+
+Garmin's API occasionally drops connections mid-sync. All 9 API endpoints are now wrapped with `tenacity`:
+- 3 attempts per call
+- Exponential backoff: 2s → 4s → 8s (capped at 30s)
+- Only retries transient errors (ConnectionError, TimeoutError, OSError)
+- Non-transient errors (404, auth failure) raise immediately
+
+---
+
+## The Solution: 8-Step Computation Pipeline
+
+Every weekly run executes the full pipeline from `correlation_engine.py`:
 
 ### Layer 0 — Data Ingestion
 
-Load `daily_metrics` from PostgreSQL, auto-discover all numeric columns (~55–65 metrics depending on available data), drop columns with insufficient variance.
+Load `daily_metrics` from PostgreSQL, auto-discover all numeric columns (~55–65 metrics depending on available data), drop columns with insufficient variance. **Enforce daily continuity** with `.asfreq('D')` gap-fill.
 
 ### Layer 1 — Correlation Matrices
 
 | Step | Method | What it produces |
 |------|--------|-----------------|
-| **1a** | Pearson $r$ (same-day) | $N \times N$ correlation matrix across all metric pairs. Each cell: $(r, p)$. Filters: $\|r\| \geq 0.3$, $p < 0.05$ |
-| **1b** | Pearson $r$ (lag-1) | Shifted matrix — does yesterday's metric $X_{t-1}$ predict today's metric $Y_t$? Same thresholds. These are the **predictive** correlations |
+| **1a** | Pearson *r* (same-day) | N×N correlation matrix across all metric pairs. Each cell: (*r*, *p*). Filters: \|*r*\| ≥ 0.3, *p* < 0.05 |
+| **1b** | Pearson *r* (lag-1) | Shifted matrix — does yesterday's metric X predict today's metric Y? Same thresholds. These are the **predictive** correlations |
 
 ### Layer 2 — Statistical Depth
 
 | Step | Method | What it produces |
 |------|--------|-----------------|
-| **2a** | Shapiro-Wilk | Normality test per metric. $W$ statistic + $p$-value. Flags non-normal distributions where Pearson assumptions may not hold |
-| **2b** | AR(1) persistence | Autoregressive coefficient $\phi_1$ for each metric: $X_t = \phi_1 X_{t-1} + \varepsilon_t$. High $\phi_1$ → metric has momentum; low → noisy/random |
-| **2c** | Z-score anomalies | $z_i = (x_i - \bar{x}) / s$. Any $\|z\| > 2.0$ flagged with date, metric, direction. These are your "unusual days" |
-| **2d** | Conditioned AR(1) | $Y_t = \beta_0 + \beta_1 Y_{t-1} + \beta_2 X_t + \varepsilon$, reported with **adjusted $R^2$**. Does adding a second metric improve the autoregressive fit? Filters: adj. $R^2 > 0.10$, $p < 0.05$ |
-| **2e** | Markov transition matrices | Discretize each metric into {LOW, MID, HIGH} via terciles. Build $3 \times 3$ transition matrices $P_{ij}$ conditioned on a second metric's state. Apply **KL-divergence** to detect state-dependent dynamics |
+| **2a** | Shapiro-Wilk | Normality test per metric. W statistic: $W = (\sum a_i x_{(i)})^2 \;/\; \sum (x_i - \bar{x})^2$. Flags non-normal distributions where Pearson assumptions weaken |
+| **2b** | AR(1) persistence | Autoregressive coefficient: $x_t = \varphi \cdot x_{t-1} + c + \varepsilon_t$. High φ → metric has momentum; low → noisy/random. Date-gap safe via `.asfreq('D')` |
+| **2c** | Z-score anomalies | $z = (x - \mu) / \sigma$. Any \|z\| > 1.5 flagged with date, metric, direction (HIGH/LOW). The 1.5σ threshold captures the outer ~13% of a normal distribution |
+| **2d** | Conditioned AR(1) | Multivariate OLS: $x_t = \beta_0 x_{t-1} + \beta_1 z_{t-1} + \beta_2 + \varepsilon$, reported with **adjusted R²**: $R^2_{adj} = 1 - [(1-R^2)(n-1)]/(n-p-1)$. Two-level forward search: Level 1 (single predictor) → Level 2 (pairs from top-5 Level-1 winners) |
+| **2e** | Markov transition matrices | See detailed breakdown below |
 
-### Adaptive Kernel Smoothing (Markov)
+### Layer 2e — Markov Analysis (detailed)
 
-Raw transition counts are sparse early on. Smoothing prevents the matrix from being dominated by sampling noise:
+Each target metric goes through a 6-step Markov pipeline:
 
-$$\alpha = \frac{0.50}{\sqrt{n}}, \quad \text{clamped to } [0.02,\; 0.25]$$
+1. **Discretization** — Values binned into 5 quintile states (VERY_LOW, LOW, MED, HIGH, VERY_HIGH) via percentile edges [0, 20, 40, 60, 80, 100]. Upgraded from 3 bins (terciles) to 5 for higher resolution.
 
-- $n = 27$ (one month) → $\alpha \approx 0.096$ — moderate smoothing
-- $n = 365$ (one year) → $\alpha \approx 0.026$ — near-raw counts
-- KL-divergence gated: requires $\geq 5$ transitions per conditioning level (`MIN_TRANSITIONS_KL = 5`)
+2. **Marginal transition matrix** — $T[i,j] = P(\text{state}_j \mid \text{state}_i)$. Only transitions between truly consecutive days are counted (gap-aware: checks $|date_{t+1} - date_t| = 1$).
 
-**Confidence tiers** on every Markov result: HIGH ($\geq 100$ transitions), GOOD ($\geq 30$), MODERATE ($\geq 15$), PRELIMINARY ($< 15$).
+3. **Adaptive kernel smoothing** — Regularises sparse rows:
+
+$$T' = (1-\alpha) \cdot T + \alpha \cdot U$$
+
+   where $U$ is uniform($1/N$) and $\alpha = \text{clamp}(\text{BASE}/\sqrt{n},\; \text{MIN},\; \text{MAX})$ decreases with more data:
+
+| Transitions | α | Effect |
+|-------------|---|--------|
+| 4 | 0.25 | Heavy smoothing (sparse data) |
+| 27 (1 month) | 0.096 | Moderate |
+| 200 | 0.035 | Light (data speaks) |
+| 1000+ | 0.02 | Near-raw counts |
+
+4. **Stationary distribution** — $\pi$ from the left eigenvector of $T'$ corresponding to eigenvalue 1: $\pi T' = \pi$, $\sum \pi_i = 1$.
+
+5. **Conditional split** — For each candidate conditioning metric $c$, population is split by median into two groups. Each group gets its own transition matrix.
+
+6. **KL divergence** — Measures how much the conditional transition matrix differs from the marginal:
+
+$$D_{KL}(P \| Q) = \sum_j P[i,j] \cdot \ln\!\left(\frac{P[i,j]}{Q[i,j]}\right)$$
+
+   Averaged over rows and both conditioning levels. Higher KL → the conditioning metric genuinely changes the day-to-day dynamics. Gated by `MIN_TRANSITIONS_KL = 8` per conditioning level (raised from 5 to compensate for 5-bin sparsity).
+
+**Confidence tiers** on every Markov result: HIGH (≥100 transitions), GOOD (≥30), MODERATE (≥15), PRELIMINARY (<15).
 
 ### Layer 3 — Natural Language Summary
 
 Pure Python `f-string` formatting (no AI). Converts all numeric results into ~2–3 KB of structured text using hardcoded thresholds:
-- $|r| > 0.7$ → "strong", $> 0.5$ → "moderate"
-- $R^2 > 0.4$ → "strong model", $> 0.2$ → "moderate"
-- KL $> 0.10$ → "STRONG divergence", $> 0.05$ → "moderate"
+- |*r*| > 0.7 → "strong", > 0.5 → "moderate"
+- R² > 0.4 → "strong model", > 0.2 → "moderate"
+- KL > 0.10 → "STRONG divergence", > 0.05 → "moderate"
 
-This text becomes the **context window** for all 9 agents — they read the summary, not the raw numbers.
+This text becomes the **context window** for all 9 agents.
 
 ### Multi-Period Benchmarks
 
-The pipeline runs across sliding windows: **7d → 14d → 30d → 60d → 90d → 180d → 365d** (as data permits). Each window gets its own Layer 1–3 output. Benchmark comparison classifies each correlation as:
+The pipeline runs across sliding windows: **current week → 7d → 14d → 21d → 30d → 60d → 90d → 180d → 365d** (as data permits). Benchmark comparison classifies each correlation as:
 
 | Pattern | Definition |
 |---------|-----------|
-| **ROBUST** | Present across $\geq 3$ windows with consistent sign |
+| **ROBUST** | Present across ≥3 windows with consistent sign |
 | **STABLE** | Present in longest + one mid-range window |
 | **EMERGING** | Only appears in recent windows |
 | **FRAGILE** | Appears/disappears inconsistently |
@@ -69,44 +156,111 @@ The pipeline runs across sliding windows: **7d → 14d → 30d → 60d → 90d �
 
 Each agent is a [CrewAI](https://github.com/crewAIInc/crewAI) agent backed by `gemini-2.5-flash` (temperature 0.3). They share 4 tools for live database queries and receive the Layer 3 summary + benchmark comparison as context.
 
-| # | Agent | What it does |
-|---|-------|-------------|
-| 1 | **Matrix Analyst** | Reads the correlation matrices and statistical summaries. Identifies which relationships are real vs. noise |
-| 2 | **Benchmark Comparator** | Compares patterns across time windows (7d→365d). Flags what's ROBUST vs. EMERGING |
-| 3 | **Pattern Detective** | Discovers hidden or non-obvious relationships in the data |
+| # | Agent | Role |
+|---|-------|------|
+| 1 | **Matrix Analyst** | Reads correlation matrices and statistical summaries. Separates real signal from noise |
+| 2 | **Benchmark Comparator** | Compares patterns across time windows (7d→365d). Flags ROBUST vs. EMERGING |
+| 3 | **Pattern Detective** | Discovers hidden or non-obvious relationships (day-of-week effects, delayed correlations) |
 | 4 | **Performance Optimizer** | Translates statistical findings into training recommendations |
-| 5 | **Recovery Specialist** | Analyzes recovery dynamics — body battery recharge, HRV bounce-back, overtraining signals |
+| 5 | **Recovery Specialist** | Analyzes body battery recharge, HRV bounce-back, overtraining signals |
 | 6 | **Trend Forecaster** | Projects current trends forward, flags concerning directions |
 | 7 | **Lifestyle Analyst** | Links lifestyle factors (hydration, stress, steps) to outcomes |
-| 8 | **Sleep Analyst** | Deep sleep architecture — duration, deep/REM/light as % of total vs. clinical norms, consistency (CV > 15% = inconsistent), next-day impact on readiness and body battery |
-| 9 | **Weakness Identifier** | Synthesizes all findings into the #1 bottleneck + actionable quick wins |
+| 8 | **Sleep Analyst** | Deep/REM/light as % of total vs. clinical norms, consistency (CV > 15% = inconsistent), next-day impact |
+| 9 | **Weakness Identifier** | Synthesizes all findings into the #1 bottleneck + 3 actionable quick wins |
+
+**Parallel execution:** Agents run in 3 batches of 3 threads each (~30s total instead of ~90s sequential). Total cost per full run: **~$0.02** on Gemini 2.5 Flash.
 
 **Agent tools:**
-- `run_sql_query` — Execute SQL against the health DB (read-only guard: rejects INSERT/UPDATE/DELETE)
-- `calculate_correlation` — Compute Pearson $r$ between any two metrics on the fly
+- `run_sql_query` — Execute read-only SQL against the health DB (rejects INSERT/UPDATE/DELETE/DROP)
+- `calculate_correlation` — Compute Pearson *r* between any two metrics on the fly
 - `find_best_days` — Retrieve days with optimal metric values
-- `analyze_pattern` — Detect patterns over configurable time windows
+- `analyze_pattern` — Detect patterns and compute trend/volatility over configurable windows
 
 ---
 
-## Architecture
+## Database
 
+**PostgreSQL on Heroku** (Essential-0, $5/month). All writes use UPSERT — idempotent, safe to re-run.
+
+### Main Tables
+
+| Table | Rows | Description |
+|-------|------|-------------|
+| `daily_metrics` | 1/day, ~65 columns | All biometric data: HR, HRV, stress, sleep architecture, body battery, steps, training readiness (10 sub-scores), weight, hydration |
+| `activities` | 1/workout | Name, type, duration, distance, HR, cadence, calories, elevation, training effects (aerobic/anaerobic), VO2 max |
+| `body_battery_events` | N/day | Intraday body battery changes with event type, impact, and feedback |
+| `weekly_summaries` | 1/week | AI-generated weekly analysis reports |
+| `matrix_summaries` | 1/day | Computed Layer 3 statistical summaries |
+
+### Data Quality Rules (baked into fetcher)
+
+| Rule | Why |
+|------|-----|
+| HRV weekly avg = 511 → NULL | Garmin sentinel for "not enough baseline data" |
+| Hydration = 0 mL → NULL | User never logged → don't let agents analyze fabricated zeros |
+| Training readiness: only AFTER_WAKEUP_RESET entries | Other entries are partial/stale |
+| `.asfreq('D')` gap-fill in correlation engine | Prevents false lag-1 pairs from date gaps |
+| Markov consecutive-day check | Only count transitions between truly consecutive days |
+
+---
+
+## Automation: GitHub Actions
+
+The weekly pipeline runs automatically every Sunday at 06:00 UTC via `.github/workflows/weekly_sync.yml`:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 6 * * 0'    # Every Sunday
+  workflow_dispatch:         # Manual trigger from GitHub UI
 ```
-Garmin Watch → Garmin Connect → Garmin API (garth OAuth)
-                                       ↓
-                         EnhancedGarminDataFetcher → PostgreSQL (Heroku, UPSERT)
-                                                          ↓
-                    ┌─────────────────────────────────────┴──────────────┐
-                    ↓                                                    ↓
-          CorrelationEngine (8 steps)                           garmin_merge.py
-          Layer 0 → 1a,1b → 2a–2e → 3                        (bulk enrichment)
-          × 7 benchmark windows                                         
-                    ↓                                                    
-      Layer 3 summary + benchmark comparison                             
-                    ↓                                                    
-          9 CrewAI Agents (Gemini 2.5 Flash)                             
-                    ↓                                                    
-          weekly_summaries table → Streamlit Dashboard / CLI
+
+**What it does:**
+1. Checks out the repo
+2. Installs Python 3.12 + dependencies
+3. Restores garth OAuth session from GitHub Secrets
+4. Runs `python weekly_sync.py --days 7` (fetch + correlate + 9 agents)
+5. Saves updated garth session back
+
+**Required GitHub Secrets:**
+- `POSTGRES_CONNECTION_STRING` — Heroku Postgres URL
+- `GARMIN_EMAIL` / `GARMIN_PASSWORD` — Garmin Connect credentials
+- `GOOGLE_API_KEY` — Gemini API key
+- `GARTH_SESSION` / `GARTH_SESSION_OAUTH2` — Base64-encoded OAuth tokens
+
+---
+
+## Dashboard
+
+Interactive Streamlit web app with glass-morphism UI (dark theme, green accent).
+
+| Page | What it shows |
+|------|--------------|
+| **Overview** | Hero metric tiles (RHR, HRV, Sleep, Stress) with week-over-week arrows, recovery bars, 7-day trend chart, recent activities |
+| **Trends** | 3 tabs: Recovery (HRV vs RHR dual-axis, stress vs body battery, readiness bars), Training (weekly volume stacked by type, HR bubble chart, training effects), Sleep (architecture stacked bars, score trend) |
+| **Deep Dive** | Single-metric analysis: stats tiles, time series + 7d moving average, distribution histogram |
+| **AI Chat** | Free-form chat interface backed by a CrewAI agent with live SQL access |
+| **AI Analysis** | Run all 9 agents in parallel (3 batches × 3 threads). Results rendered as color-coded insight cards |
+| **Goals** | 8-week trend sparklines for 7 key metrics with clinical benchmarks |
+
+---
+
+## Testing
+
+**49 tests**, all passing (`pytest tests/ -v`):
+
+| File | Tests | Coverage |
+|------|-------|----------|
+| `test_correlation_math.py` | 22 | `_adaptive_alpha` boundary values + monotonicity, constants (5 bins, 8 min transitions), date-gap `.asfreq('D')` fix, Pearson lag-1, AR(1) φ recovery, z-score anomaly detection, Markov row-sum/stationary/KL/quintile, consecutive-day skip |
+| `test_fetcher.py` | 18 | `deep_vars` (flat/nested/lists/prefix), `_safe_val` (NaN→None, NaT→None, numpy→Python), `_apply_quality_fixes` (HRV 511, hydration 0) |
+| `test_agents_tools.py` | 9 | SQL injection guard (INSERT/DROP/DELETE blocked), `run_sql_query` output format, `calculate_correlation` strong/insufficient, `analyze_pattern` stats/insufficient. All DB calls mocked — no Postgres required |
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test file
+pytest tests/test_correlation_math.py -v
 ```
 
 ---
@@ -115,29 +269,31 @@ Garmin Watch → Garmin Connect → Garmin API (garth OAuth)
 
 ```
 garmin_project/
-├── README.md               # This file
-├── .env.example            # Template for environment variables
+├── README.md
+├── requirements.txt
 ├── .gitignore
-├── requirements.txt        # Python dependencies
-├── PROJECT_STATUS.md       # Development status & roadmap
 │
-├── src/                    # Core application modules
-│   ├── __init__.py
-│   ├── enhanced_fetcher.py     # Garmin data collection via garth
-│   ├── correlation_engine.py   # Statistical analysis (4-layer) + adaptive kernel smoothing
-│   ├── enhanced_agents.py      # 9 AI agents (CrewAI + Gemini)
-│   ├── enhanced_schema.py      # Extended database schema
+├── src/
+│   ├── correlation_engine.py    # 8-step statistical pipeline (~1,400 lines)
+│   ├── enhanced_agents.py       # 9 CrewAI agents + 4 tools (~1,200 lines)
+│   ├── enhanced_fetcher.py      # Garmin API fetcher with tenacity retry (~860 lines)
+│   ├── dashboard.py             # Streamlit v2 glass-morphism UI (~1,300 lines)
+│   ├── weekly_sync.py           # Main automation: fetch → correlate → agents
+│   ├── enhanced_schema.py       # Extended database schema
 │   ├── garmin_health_tracker.py # Config, DatabaseManager, core classes
-│   ├── garmin_merge.py         # Bulk Garmin DB merge utility
-│   ├── visualizations.py       # Plotly chart generation
-│   ├── dashboard.py            # Streamlit web dashboard
-│   └── weekly_sync.py          # Weekly automation pipeline
+│   ├── garmin_merge.py          # Bulk merge from Garmin DB export
+│   └── visualizations.py        # Plotly chart generation library
 │
-├── .github/workflows/      # CI/CD
-│   └── weekly_sync.yml         # Sunday cron automation
+├── tests/
+│   ├── test_correlation_math.py # 22 tests — math pipeline
+│   ├── test_fetcher.py          # 18 tests — data utilities
+│   └── test_agents_tools.py     # 9 tests — agent tools (mocked DB)
 │
-└── .streamlit/             # Dashboard config
-    └── config.toml             # Dark theme, green accent
+├── .github/workflows/
+│   └── weekly_sync.yml          # Sunday cron automation
+│
+└── .streamlit/
+    └── config.toml              # Dark theme, #00f5a0 accent
 ```
 
 ---
@@ -148,383 +304,48 @@ garmin_project/
 
 - Python 3.10+
 - PostgreSQL 14+ (local or Heroku)
-- Garmin Connect account (with watch syncing data)
-- Google AI API key (for Gemini — free tier works)
+- Garmin Connect account with watch syncing
+- Google AI API key (Gemini — free tier works)
 
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/garmin-health-tracker.git
-cd garmin-health-tracker
+git clone https://github.com/Liranatt/garmin-project.git
+cd garmin-project
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS/Linux
 pip install -r requirements.txt
 ```
 
 ### 2. Configure Environment
 
-Create a `.env` file in the project root:
+Create a `.env` file:
 
 ```env
-# Garmin Connect credentials
 GARMIN_EMAIL=your@email.com
 GARMIN_PASSWORD=your_password
-
-# PostgreSQL
-POSTGRES_CONNECTION_STRING=postgresql://user:pass@localhost:5432/postgres
-
-# Google Gemini API (https://aistudio.google.com/apikey)
+POSTGRES_CONNECTION_STRING=postgresql://user:pass@host:5432/db
 GOOGLE_API_KEY=your_gemini_api_key
-
-# Garth OAuth token storage
 GARTH_HOME=~/.garth
-
-# Optional: Garmin bulk download DB (for garmin_merge.py)
-# GARMIN_CONNECTION_STRING=postgresql://user:pass@localhost:5432/garmin
 ```
 
 ### 3. First Run
 
 ```bash
-# Full pipeline: fetch data → compute correlations → run AI agents
+# Full pipeline: fetch → compute correlations → run 9 AI agents
 python src/weekly_sync.py
 
 # Or step by step:
-python src/weekly_sync.py --fetch     # Fetch only (skip AI)
+python src/weekly_sync.py --fetch     # Fetch only
 python src/weekly_sync.py --analyze   # Analyze only (skip fetch)
 python src/weekly_sync.py --days 14   # Custom date range
 ```
 
-On first run, Garmin may prompt for MFA — enter the code in the terminal.
-
-### 4. Launch Dashboard
+### 4. Dashboard
 
 ```bash
 streamlit run src/dashboard.py
-```
-
----
-
-## Core Modules
-
-### Data Fetcher (`src/enhanced_fetcher.py`)
-
-Collects **all** available Garmin metrics using the `garth` library with OAuth:
-
-- **Heart rate**: resting, max, min
-- **HRV**: last night, 5-min high, weekly avg, status
-- **Stress**: average + duration breakdowns (rest/low/medium/high)
-- **Sleep**: duration, deep/light/REM/awake, score, respiration, skin temp
-- **Body battery**: charged, drained, peak, low, intraday events
-- **Steps**: total daily count
-- **Training readiness**: overall score + 10 sub-scores
-- **Intensity minutes**: moderate + vigorous
-- **Weight & hydration**
-- **Activities**: type, duration, distance, HR, cadence, elevation, calories
-
-All data is written to PostgreSQL with **UPSERT** (idempotent — safe to re-run).
-
-Training days are classified as **HARD / MODERATE / EASY / REST** based on activity type, duration, and heart rate. Upper/lower body detection via exercise-sets API.
-
-### Correlation Engine (`src/correlation_engine.py`)
-
-See **[The Math: 8-Step Computation Pipeline](#the-math-8-step-computation-pipeline)** above for full details.
-
-~1,300 lines of pure statistical computation. No AI. Results stored in `matrix_summaries` table (1 row/day via UPSERT).
-
-### AI Agents (`src/enhanced_agents.py`)
-
-See **[The Agents: 9 Specialists](#the-agents-9-specialists-on-gemini-25-flash)** above for the full roster and tools.
-
-**Analysis modes:**
-
-```python
-from enhanced_agents import AdvancedHealthAgents
-
-agents = AdvancedHealthAgents(db_manager=None)
-
-# Weekly summary (all 9 agents)
-result = agents.run_weekly_summary(matrix_context="...")
-
-# Comprehensive deep analysis (6 agents)
-result = agents.run_comprehensive_analysis(days=30)
-
-# Goal-specific analysis (2 agents)
-result = agents.run_goal_analysis(goal="improve sleep quality")
-```
-
-### Dashboard (`src/dashboard.py`)
-
-Interactive Streamlit web app with:
-
-- **Overview**: Key metrics at a glance + trend sparklines
-- **Trends & Analysis**: Recovery analysis, training load, correlation heatmaps
-- **Deep Dive**: Single-metric historical analysis
-- **AI Insights**: Run agents on demand from the UI
-- **Goals & Progress**: Track custom health goals
-- **Settings**: Configure date ranges, visualization preferences
-
-### Visualizations (`src/visualizations.py`)
-
-Plotly-based chart library:
-
-- Weekly dashboard (4×2 subplot grid)
-- Recovery analysis (sleep→readiness, HRV vs RHR, stress→sleep)
-- Training analysis (load curves, activity distribution, body battery, training effects)
-- Correlation heatmap
-- Progress report (week-over-week comparison)
-- Calendar heatmap (GitHub-style)
-- Export all charts to HTML
-
-### Weekly Sync (`src/weekly_sync.py`)
-
-Main automation entry point. Orchestrates the full pipeline:
-
-1. **Fetch** — Last 7 days of Garmin data → PostgreSQL
-2. **Correlate** — Compute statistical matrices + multi-period benchmarks
-3. **Analyze** — Run 9 AI agents on the data
-4. **Store** — Save insights to `weekly_summaries` table
-
-```bash
-python src/weekly_sync.py              # Full pipeline
-python src/weekly_sync.py --fetch      # Fetch only
-python src/weekly_sync.py --analyze    # Analyze only
-python src/weekly_sync.py --days 14    # Custom range
-```
-
-### Garmin Merge (`src/garmin_merge.py`)
-
-Enriches the production database with data from a separate Garmin bulk-download database:
-
-- VO2 max (running/cycling)
-- Race predictions (5K, 10K, half marathon)
-- Acute/chronic training load + ACWR
-- Heat/altitude acclimation status
-- Cycling abilities (FTP, etc.)
-- Activity-level training effects and load
-
-```bash
-python src/garmin_merge.py                  # Full merge
-python src/garmin_merge.py --validate-only  # Dry run
-python src/garmin_merge.py --since 2025-01-01
-```
-
----
-
-## Database Schema
-
-### Main Tables
-
-**`daily_metrics`** — One row per day (~65+ columns):
-- Date (PK), heart rate (resting/max/min), HRV (last_night/5min_high/weekly_avg/status)
-- Stress (level + rest/low/medium/high duration), sleep (seconds/deep/light/REM/awake/score/respiration/stress/skin_temp)
-- Steps, body battery (charged/drained/peak/low), intensity minutes (moderate/vigorous)
-- Training readiness (score + 10 sub-scores), weight, hydration
-- Extended: VO2 max, race predictions, ACWR, acclimation status
-
-**`activities`** — One row per activity:
-- Activity ID (PK), name, type, timestamps, distance, duration, HR, speed, cadence, calories, elevation
-- Extended: training effects (aerobic/anaerobic), training load, VO2 max, stride length, sport type
-
-**`body_battery_events`** — Intraday body battery events:
-- Type, start time, duration, impact, feedback type
-
-### Supplementary Tables
-
-| Table | Purpose |
-|-------|---------|
-| `wellness_log` | Daily subjective wellness questionnaire |
-| `nutrition_log` | Nutrition tracking |
-| `personal_records` | Personal bests and records |
-| `goals` | Health and fitness goals |
-| `weekly_summaries` | AI-generated weekly analysis reports |
-| `matrix_summaries` | Computed statistical summaries |
-
----
-
-## Usage Patterns
-
-### Weekly Health Review
-
-```bash
-# Run the full pipeline every Sunday
-python src/weekly_sync.py
-
-# Check the dashboard
-streamlit run src/dashboard.py
-```
-
-### Training Decision
-
-```bash
-# Quick look at recent metrics
-python scripts/raw_analysis.py
-
-# Or query directly
-python -c "
-import psycopg2, os
-from dotenv import load_dotenv; load_dotenv()
-conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
-cur = conn.cursor()
-cur.execute('''
-    SELECT date, training_readiness, hrv_last_night, bb_charged, stress_level
-    FROM daily_metrics ORDER BY date DESC LIMIT 7
-''')
-for row in cur.fetchall():
-    print(row)
-"
-```
-
-### Read Latest AI Insights
-
-```bash
-python scripts/read_agents.py
-```
-
-### Verify AI Claims
-
-```bash
-python scripts/verify_insights.py
-```
-
----
-
-## Automation & Deployment
-
-### Option 1: Local Cron (Free)
-
-```bash
-# Linux/macOS crontab
-0 8 * * 0 cd /path/to/garmin-health-tracker && python src/weekly_sync.py >> sync.log 2>&1
-
-# Windows Task Scheduler
-# Action: python src/weekly_sync.py
-# Trigger: Weekly, Sunday 8:00 AM
-```
-
-**Pros:** Simplest setup, free, full control.
-**Cons:** Requires computer to be on at scheduled time.
-
-### Option 2: Cloud Server ($5–10/month)
-
-Deploy on DigitalOcean, AWS, or any VPS:
-
-```bash
-ssh your-server
-git clone https://github.com/YOU/garmin-health-tracker.git
-cd garmin-health-tracker
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env && nano .env
-
-crontab -e
-0 8 * * 0 cd ~/garmin-health-tracker && .venv/bin/python src/weekly_sync.py >> sync.log 2>&1
-```
-
-### Option 3: GitHub Actions (Free with Hosted DB)
-
-Use a free hosted PostgreSQL (e.g., Supabase, Neon) + GitHub Actions:
-
-1. Push code to GitHub (ensure `.env` is gitignored)
-2. Add secrets in GitHub → Settings → Secrets:
-   - `POSTGRES_CONNECTION_STRING`
-   - `GARMIN_EMAIL`, `GARMIN_PASSWORD`
-   - `GOOGLE_API_KEY`
-3. Create `.github/workflows/weekly_sync.yml`:
-
-```yaml
-name: Weekly Health Sync
-on:
-  schedule:
-    - cron: '0 8 * * 0'  # Every Sunday 8 AM UTC
-  workflow_dispatch:       # Manual trigger
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install -r requirements.txt
-      - run: python src/weekly_sync.py
-        env:
-          POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-```
-
-**Estimated cost:** Supabase (free) + GitHub Actions ≈ $0.12/month.
-
----
-
-## GitHub Setup
-
-### Initial Push
-
-```bash
-cd garmin-health-tracker
-
-# Verify .env is NOT committed
-cat .gitignore | grep ".env"
-
-git init
-git add .
-git commit -m "Initial commit: Garmin Health Intelligence"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/garmin-health-tracker.git
-git push -u origin main
-```
-
-### Security Checklist
-
-- [ ] `.env` is in `.gitignore`
-- [ ] No credentials in committed files
-- [ ] `archive/` is gitignored
-- [ ] `data/` (CSV exports) is gitignored
-- [ ] GitHub secrets configured for Actions (if using)
-
----
-
-## Real-World Use Cases
-
-### Overtraining Detection
-
-The system identifies overtraining patterns by cross-referencing:
-- Declining HRV trend + rising resting HR
-- High training load (ACWR > 1.5)
-- Dropping body battery recovery
-- Rising stress levels during sleep
-
-### Sleep Optimization
-
-Discovers what actually affects your sleep:
-- Which training intensities lead to better deep sleep
-- Optimal hydration levels for sleep quality
-- Stress management impact on REM sleep
-- Correlation between training timing and sleep score
-
-### Finding Peak Performance Days
-
-```sql
-SELECT date, training_readiness, hrv_last_night, sleep_score,
-       bb_charged, stress_level
-FROM daily_metrics
-WHERE training_readiness > 70
-ORDER BY training_readiness DESC;
-```
-
-### Goal Tracking
-
-```python
-from enhanced_agents import AdvancedHealthAgents
-
-agents = AdvancedHealthAgents(db_manager=None)
-result = agents.run_goal_analysis(goal="improve HRV from 40 to 55")
-print(result)
 ```
 
 ---
@@ -533,50 +354,12 @@ print(result)
 
 | Component | Cost |
 |-----------|------|
-| Garmin API | Free (your data) |
+| Garmin API | Free |
 | PostgreSQL (Heroku Essential-0) | $5/month |
-| Google Gemini API (free tier) | Free (up to 15 RPM) |
+| Gemini 2.5 Flash (9 agents/week) | ~$0.08/month |
 | GitHub Actions | ~$0.12/month |
 | Streamlit Community Cloud | Free |
-| **Total** | **~$5/month** |
-
----
-
-## Troubleshooting
-
-### Authentication Issues
-
-```
-MFA Required: Enter the code from your Garmin Connect app when prompted.
-Session expired: Delete ~/.garth/ and re-authenticate.
-```
-
-### Database Connection
-
-```bash
-# Test PostgreSQL connection
-psql $POSTGRES_CONNECTION_STRING -c "SELECT 1;"
-
-# Verify tables exist
-psql $POSTGRES_CONNECTION_STRING -c "\dt"
-```
-
-### Agent Errors
-
-```bash
-# Test Gemini API key
-python tests/test_gemini.py
-
-# Test agents with real data
-python tests/test_agents.py
-```
-
-### Empty Data
-
-If metrics show NULL, check:
-1. Garmin watch was worn and synced to the phone app
-2. Sufficient time has passed for Garmin to process data (up to 24h)
-3. Run `python scripts/debug_fields.py` to inspect available API fields
+| **Total** | **~$5.20/month** |
 
 ---
 
@@ -584,14 +367,15 @@ If metrics show NULL, check:
 
 | Package | Purpose |
 |---------|---------|
-| `crewai` | AI agent orchestration framework (uses Gemini via litellm) |
+| `crewai[google-genai]` | AI agent orchestration (uses Gemini via litellm) |
 | `garth` | Garmin Connect API client (OAuth) |
 | `psycopg2-binary` | PostgreSQL driver |
-| `pandas` | Data manipulation |
-| `numpy` | Numerical computation |
-| `scipy` | Statistical analysis |
+| `pandas` / `numpy` | Data manipulation |
+| `scipy` | Statistical analysis (Shapiro-Wilk, OLS) |
 | `plotly` | Interactive charts |
 | `streamlit` | Web dashboard |
+| `tenacity` | Retry logic with exponential backoff |
+| `pytest` | Test framework |
 | `python-dotenv` | Environment variable management |
 
 ---

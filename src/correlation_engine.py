@@ -93,8 +93,8 @@ KEY_RANGE_METRICS = [
 ]
 
 # Markov discretisation
-N_BINS = 3
-BIN_LABELS = ["LOW", "MED", "HIGH"]
+N_BINS = 5
+BIN_LABELS = ["VERY_LOW", "LOW", "MED", "HIGH", "VERY_HIGH"]
 
 # Smoothing alpha for Markov transitions (must be same for marginal & conditional)
 # Now adaptive: α = max(SMOOTH_ALPHA_MIN, SMOOTH_ALPHA_BASE / sqrt(n_transitions))
@@ -106,7 +106,8 @@ SMOOTH_ALPHA_MIN  = 0.02   # floor — always keep a tiny uniform mix
 SMOOTH_ALPHA_MAX  = 0.25   # ceiling — cap smoothing for very small n
 
 # Minimum transitions per conditioning level for KL to be computed
-MIN_TRANSITIONS_KL = 5
+# Raised from 5→8 to compensate for 5-bin (quintile) sparsity
+MIN_TRANSITIONS_KL = 8
 
 
 def _adaptive_alpha(n_transitions: int) -> float:
@@ -661,6 +662,15 @@ class CorrelationEngine:
 
         log.info(f"   Loaded {len(df)} days ({df['date'].min()} → {df['date'].max()})")
 
+        # Fix 0: Enforce daily continuity — fill date gaps with NaN rows
+        # so that .shift(1) and positional [1:]/[:-1] operations correctly
+        # skip non-consecutive days (NaN pairs naturally drop via .dropna()).
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").asfreq("D").reset_index()
+        n_filled = df.shape[0] - len(df.dropna(how="all", subset=[c for c in df.columns if c != "date"]))
+        if n_filled > 0:
+            log.info(f"   Inserted {n_filled} gap-fill rows for date continuity")
+
         # Fix 1: HRV sentinel 511 → NaN
         if "tr_hrv_weekly_avg" in df.columns:
             n_511 = (df["tr_hrv_weekly_avg"] == 511).sum()
@@ -760,7 +770,20 @@ class CorrelationEngine:
 
     def _layer2a_normality(self, data: pd.DataFrame,
                            metrics: List[str]) -> Dict[str, Tuple[str, float]]:
-        """Shapiro-Wilk normality test for each metric."""
+        """Shapiro-Wilk normality test for each metric.
+
+        Tests H₀: metric ~ Normal.  The W statistic measures how well
+        the ordered sample matches expected normal order statistics:
+
+            W = (Σ aᵢ x_(i))² / Σ (xᵢ - x̄)²
+
+        Decision: p > 0.05 → assume normal, else non-normal.
+        Non-normal metrics are preferred candidates for Markov analysis
+        (Layer 2e) since their distributions benefit from state-based
+        modelling over linear assumptions.
+
+        Truncates to first 5 000 values (scipy limit).
+        """
         log.info("   Layer 2a: normality tests…")
         normality: Dict[str, Tuple[str, float]] = {}
         for m in metrics:
@@ -778,7 +801,20 @@ class CorrelationEngine:
 
     def _layer2b_ar1(self, data: pd.DataFrame,
                      metrics: List[str]) -> List[Tuple]:
-        """Simple AR(1): does yesterday predict today for same metric?"""
+        """First-order autoregressive model: does yesterday predict today?
+
+        For each metric x, fits the AR(1) model via OLS:
+
+            x_t = φ·x_{t−1} + c + ε_t
+
+        where φ (slope) is the persistence coefficient.  Reports:
+        - φ : autocorrelation strength  (φ ≈ 1 → strong persistence)
+        - R² : fraction of variance explained by yesterday’s value
+        - p  : significance of the linear relationship
+
+        Date-gap safe: relies on .shift(1) after asfreq('D') gap-fill,
+        so non-consecutive days produce NaN pairs that are dropped.
+        """
         log.info("   Layer 2b: AR(1) persistence…")
         results = []
         for m in metrics:
@@ -799,7 +835,17 @@ class CorrelationEngine:
 
     def _layer2c_anomalies(self, df: pd.DataFrame, data: pd.DataFrame,
                            metrics: List[str]) -> List[Tuple]:
-        """Find recent values >1.5σ from mean."""
+        """Detect recent statistical anomalies via z-score.
+
+        For each metric computes:
+
+            z = (x − μ) / σ
+
+        where μ and σ are the full-window mean and std dev.
+        Flags the 3 most recent values where |z| > 1.5 as anomalies,
+        labelled HIGH (z > 0) or LOW (z < 0).  The 1.5σ threshold
+        captures the outer ~13 % of a normal distribution.
+        """
         anomalies = []
         for m in metrics:
             vals = data[m].dropna()
@@ -821,7 +867,27 @@ class CorrelationEngine:
     def _layer2d_conditioned_ar1(self, data: pd.DataFrame,
                                   metrics: List[str],
                                   normality: Dict) -> List[Tuple]:
-        """Multi-variable next-day prediction with adjusted R²."""
+        """Multi-variable next-day prediction with adjusted R².
+
+        Extends AR(1) by adding exogenous regressors.  Two levels:
+
+        Level 1 — single conditioning variable z:
+            x_t = β₀·x_{t−1} + β₁·z_{t−1} + β₂ + ε
+
+        Level 2 — two conditioning variables z₁, z₂:
+            x_t = β₀·x_{t−1} + β₁·z₁_{t−1} + β₂·z₂_{t−1} + β₃ + ε
+
+        Solved via ordinary least-squares (np.linalg.lstsq).
+        Reports adjusted R² to penalise extra parameters:
+
+            R²_adj = 1 − [(1−R²)(n−1)] / (n−p−1)
+
+        Only kept if R² > 0.10 (Level 1) or R² > 0.15 (Level 2).
+        Improvement = R²_model − R²_baseline (baseline = simple AR(1)).
+
+        Uses the top-5 Level-1 winners as candidates for Level-2
+        combinations (greedy forward search).
+        """
         log.info("   Layer 2d: conditioned AR(1)…")
         # Only use KEY_TARGETS that exist in our metrics
         targets = [t for t in KEY_TARGETS
@@ -923,7 +989,41 @@ class CorrelationEngine:
 
     def _layer2e_markov(self, data: pd.DataFrame, metrics: List[str],
                         normality: Dict) -> List[Dict]:
-        """Markov transition matrices with proper KL-divergence."""
+        """Markov transition matrices with KL-divergence conditioning.
+
+        For each target metric:
+
+        1. **Discretization** — values are binned into N₅ = 5 quintile
+           states (VERY_LOW … VERY_HIGH) using percentile edges
+           [0, 20, 40, 60, 80, 100].
+
+        2. **Marginal transition matrix** T[i,j] = P(state_j | state_i).
+           Only transitions between truly consecutive days are counted
+           (gap-aware: checks |date_{t+1} − date_t| = 1).
+
+        3. **Adaptive kernel smoothing** — regularises sparse rows:
+               T' = (1−α)·T + α·U
+           where U is uniform(1/N) and α = clamp(BASE/√n, MIN, MAX)
+           decreases with more data (see _adaptive_alpha).
+
+        4. **Stationary distribution** π from the left eigen-vector
+           of T' corresponding to eigenvalue 1:
+               π T' = π ,  Σ π_i = 1
+
+        5. **Conditional split** — for each candidate conditioning
+           metric c, the population is split by median:
+               c_level = 0 if c ≤ median(c) else 1
+
+        6. **KL divergence** measures how much the conditional
+           transition matrix differs from the marginal:
+               D_KL(P ∥ Q) = Σ_j P[i,j] · ln(P[i,j] / Q[i,j])
+           averaged over rows and both conditioning levels.
+           Higher KL → the conditioning metric genuinely changes
+           the day-to-day dynamics of the target.
+
+        Gated by MIN_TRANSITIONS_KL per conditioning level to
+        avoid noisy KL estimates from tiny samples.
+        """
         log.info("   Layer 2e: Markov transitions + KL…")
 
         # Targets: non-normal + key health metrics
@@ -939,12 +1039,14 @@ class CorrelationEngine:
         results = []
 
         for target in markov_targets:
-            vals = data[target].dropna().values
+            non_null = data[["date", target]].dropna()
+            vals = non_null[target].values
+            dates = pd.to_datetime(non_null["date"]).values
             if len(vals) < 6:
                 continue
 
-            # Discretize into tercile bins
-            edges = np.percentile(vals, [0, 33.3, 66.7, 100])
+            # Discretize into quintile bins (5 levels for higher resolution)
+            edges = np.percentile(vals, [0, 20, 40, 60, 80, 100])
             edges[0] -= 1
             edges[-1] += 1
             edges = np.unique(edges)
@@ -954,10 +1056,12 @@ class CorrelationEngine:
 
             bins = np.clip(np.digitize(vals, edges[1:-1]), 0, actual_bins - 1)
 
-            # Marginal transition matrix
+            # Marginal transition matrix — only count consecutive-day pairs
             T_marginal = np.zeros((actual_bins, actual_bins), dtype=np.float64)
             for t in range(len(bins) - 1):
-                T_marginal[bins[t], bins[t + 1]] += 1
+                day_gap = (dates[t + 1] - dates[t]) / np.timedelta64(1, "D")
+                if day_gap == 1:  # only truly consecutive days
+                    T_marginal[bins[t], bins[t + 1]] += 1
 
             n_trans = int(T_marginal.sum())
             alpha = _adaptive_alpha(n_trans)
@@ -990,11 +1094,12 @@ class CorrelationEngine:
                           if m != target and data[m].notna().sum() >= 8]
 
             for cond_metric in cond_cands:
-                sub = data[[target, cond_metric]].dropna()
+                sub = data[["date", target, cond_metric]].dropna()
                 if len(sub) < 6:
                     continue
                 t_vals = sub[target].values
                 c_vals = sub[cond_metric].values
+                sub_dates = pd.to_datetime(sub["date"]).values
 
                 t_bins = np.clip(np.digitize(t_vals, edges[1:-1]),
                                  0, actual_bins - 1)
@@ -1006,7 +1111,8 @@ class CorrelationEngine:
                 for c_level in [0, 1]:
                     T_c = np.zeros((actual_bins, actual_bins), dtype=np.float64)
                     for t in range(len(t_bins) - 1):
-                        if c_bins[t] == c_level:
+                        day_gap = (sub_dates[t + 1] - sub_dates[t]) / np.timedelta64(1, "D")
+                        if c_bins[t] == c_level and day_gap == 1:
                             T_c[t_bins[t], t_bins[t + 1]] += 1
                     n_trans_c = int(T_c.sum())
                     level_trans[c_level] = n_trans_c

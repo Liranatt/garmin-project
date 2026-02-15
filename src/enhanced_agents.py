@@ -10,7 +10,7 @@ import pandas as pd
 import psycopg2
 import os
 import logging
-from typing import List
+from typing import Any, List
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,7 +20,7 @@ log = logging.getLogger("enhanced_agents")
 # ג”€ג”€ Gemini LLM for all agents (lazyג€‘init to avoid import-time crashes) ג”€ג”€
 _gemini_llm = None
 
-def _get_llm():
+def _get_llm() -> LLM:
     global _gemini_llm
     if _gemini_llm is None:
         _gemini_llm = LLM(
@@ -166,7 +166,7 @@ class AdvancedHealthAgents:
     Fully standalone ג€” uses psycopg2 via POSTGRES_CONNECTION_STRING.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.tools = [
             run_sql_query,
             calculate_correlation,
