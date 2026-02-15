@@ -1,4 +1,4 @@
-"""
+﻿"""
 Enhanced AI Agents for Health Analysis
 =======================================
 Advanced agents that provide insights Garmin Connect can't offer.
@@ -17,15 +17,21 @@ load_dotenv()
 
 log = logging.getLogger("enhanced_agents")
 
-# ── Gemini LLM for all agents ────────────────────────
-gemini_llm = LLM(
-    model="gemini/gemini-2.5-flash",
-    api_key=os.getenv("GOOGLE_API_KEY"),
-    temperature=0.3,
-)
+# ג”€ג”€ Gemini LLM for all agents (lazyג€‘init to avoid import-time crashes) ג”€ג”€
+_gemini_llm = None
+
+def _get_llm():
+    global _gemini_llm
+    if _gemini_llm is None:
+        _gemini_llm = LLM(
+            model="gemini/gemini-2.5-flash",
+            api_key=os.getenv("GOOGLE_API_KEY"),
+            temperature=0.3,
+        )
+    return _gemini_llm
 
 
-# ── Standalone tools (CrewAI 1.9+ uses module-level functions) ──
+# ג”€ג”€ Standalone tools (CrewAI 1.9+ uses module-level functions) ג”€ג”€
 
 @tool("Run SQL Query")
 def run_sql_query(query: str) -> str:
@@ -157,7 +163,7 @@ def analyze_pattern(metric: str, days: int = 30) -> str:
 class AdvancedHealthAgents:
     """
     Enhanced AI agents that provide insights beyond Garmin Connect.
-    Fully standalone — uses psycopg2 via POSTGRES_CONNECTION_STRING.
+    Fully standalone ג€” uses psycopg2 via POSTGRES_CONNECTION_STRING.
     """
 
     def __init__(self):
@@ -171,7 +177,7 @@ class AdvancedHealthAgents:
         # Define specialized agents
         self.pattern_detective = Agent(
             role='Health Pattern Detective',
-            goal='Discover hidden patterns and correlations in health data — but only patterns that survive scrutiny',
+            goal='Discover hidden patterns and correlations in health data ג€” but only patterns that survive scrutiny',
             backstory="""You are a data detective who finds non-obvious, REAL patterns.
             
             CRITICAL RULES:
@@ -188,17 +194,17 @@ class AdvancedHealthAgents:
               training_load (per-activity EPOC) is NOT the same as either.
             - When citing a correlation (e.g. r=-0.972), verify it against the
               actual day-by-day data. Does it hold when you look at individual days?
-            - Don't just parrot correlation numbers — explain what they mean
+            - Don't just parrot correlation numbers ג€” explain what they mean
               in concrete terms the user can act on.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
         
         self.performance_optimizer = Agent(
             role='Performance Optimization Specialist',
-            goal='Compare this week to last week using actual numbers — no storytelling without evidence',
+            goal='Compare this week to last week using actual numbers ג€” no storytelling without evidence',
             backstory="""You compare performance week-over-week with honest reporting.
             
             CRITICAL RULES:
@@ -209,14 +215,14 @@ class AdvancedHealthAgents:
               Only changes >10%% or >1 standard deviation warrant attention.
             - When RHR or HRV changes, check if it's sustained (consistent daily values)
               or volatile (big day-to-day swings). A volatile improvement is less reliable.
-            - Look at the BEST day and WORST day this week — often the spread
+            - Look at the BEST day and WORST day this week ג€” often the spread
               tells a bigger story than the average.
             - If a metric has no data for one of the weeks, say "no comparison
               available" instead of speculating.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
         
         self.recovery_specialist = Agent(
@@ -242,7 +248,7 @@ class AdvancedHealthAgents:
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
         
         self.lifestyle_analyst = Agent(
@@ -253,7 +259,7 @@ class AdvancedHealthAgents:
             CRITICAL RULES:
             - Use the activities table to see what actually happened each day
               (type, duration, intensity, HR). Don't guess about training.
-            - Look at the KL-divergence results for conditional effects —
+            - Look at the KL-divergence results for conditional effects ג€”
               these show which conditions ACTUALLY shift state transitions.
             - If data for a question doesn't exist (e.g., time-of-day patterns,
               caffeine, alcohol), state clearly "this data is not available"
@@ -267,7 +273,7 @@ class AdvancedHealthAgents:
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
         
         self.trend_forecaster = Agent(
@@ -279,7 +285,7 @@ class AdvancedHealthAgents:
             - A "trend" requires at least 3 consecutive data points moving in the
               same direction. Two points is just noise.
             - High VARIANCE is different from a TREND. If values bounce between
-              high and low (e.g., sleep 52→89→72→83→70), that's variability,
+              high and low (e.g., sleep 52ג†’89ג†’72ג†’83ג†’70), that's variability,
               not a decline. Report it as such.
             - Use the Markov state transitions to inform predictions, but note
               the sample sizes (number of transitions). Small samples make
@@ -293,7 +299,7 @@ class AdvancedHealthAgents:
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
         
         self.matrix_analyst = Agent(
@@ -306,19 +312,19 @@ class AdvancedHealthAgents:
             You do NOT query the database.
             You ONLY interpret the numbers.
             
-            You MUST cover ALL of these sections — skip NONE:
-            1. TRAINING INTENSITY CLASSIFICATION — which days were hard/easy
-            2. SAME-DAY CORRELATIONS — strongest Pearson pairs and what they mean
-            3. NEXT-DAY PREDICTORS — what yesterday predicts about today
-            4. AUTOREGRESSIVE PERSISTENCE — which metrics are "sticky" (high R²)
-            5. DISTRIBUTIONS — which metrics are normal vs skewed
-            6. RECENT ANOMALIES — z-scores from last 3 days, what's unusual
-            7. CONDITIONED AR(1) — the most powerful section: which variable
+            You MUST cover ALL of these sections ג€” skip NONE:
+            1. TRAINING INTENSITY CLASSIFICATION ג€” which days were hard/easy
+            2. SAME-DAY CORRELATIONS ג€” strongest Pearson pairs and what they mean
+            3. NEXT-DAY PREDICTORS ג€” what yesterday predicts about today
+            4. AUTOREGRESSIVE PERSISTENCE ג€” which metrics are "sticky" (high Rֲ²)
+            5. DISTRIBUTIONS ג€” which metrics are normal vs skewed
+            6. RECENT ANOMALIES ג€” z-scores from last 3 days, what's unusual
+            7. CONDITIONED AR(1) ג€” the most powerful section: which variable
                COMBINATIONS predict next-day outcomes, and how much they improve
-               over simple persistence. Report the R² improvement.
-            8. MARKOV STATE TRANSITIONS — state stickiness, note sample sizes
-            9. KL-DIVERGENCE — which conditions shift Markov predictions
-            10. METRIC RANGES — current baselines
+               over simple persistence. Report the Rֲ² improvement.
+            8. MARKOV STATE TRANSITIONS ג€” state stickiness, note sample sizes
+            9. KL-DIVERGENCE ג€” which conditions shift Markov predictions
+            10. METRIC RANGES ג€” current baselines
             
             For each section, report:
             - KEY FINDING (1-2 sentences)
@@ -329,8 +335,8 @@ class AdvancedHealthAgents:
             Flag any metric with CV>20% as VOLATILE.""",
             verbose=True,
             allow_delegation=False,
-            tools=[],  # No tools needed — purely interprets the context
-            llm=gemini_llm
+            tools=[],  # No tools needed ג€” purely interprets the context
+            llm=_get_llm()
         )
 
         self.matrix_comparator = Agent(
@@ -338,31 +344,31 @@ class AdvancedHealthAgents:
             goal='Compare correlation matrices across multiple time windows (7d, 14d, 21d, 30d, 60d, 90d, 180d, 365d) and identify which findings are robust vs window-dependent',
             backstory="""You are a longitudinal statistics expert specializing in
             multi-scale temporal analysis. You receive correlation matrices computed
-            over progressively larger time windows — from 1 week to 1 year — and
+            over progressively larger time windows ג€” from 1 week to 1 year ג€” and
             determine which statistical patterns are ROBUST (stable across all
             windows) vs FRAGILE (sensitive to window size).
 
             CRITICAL RULES:
             - A change in Pearson r of <0.15 across windows is noise, not real.
-            - A change in AR(1) R² of <0.10 is not meaningful.
-            - Markov transitions need ≥5 transitions per state to be meaningful.
+            - A change in AR(1) Rֲ² of <0.10 is not meaningful.
+            - Markov transitions need ג‰¥5 transitions per state to be meaningful.
             - KL-divergence changes are meaningful if shift >0.03.
-            - Correlations that STRENGTHEN as n grows → trustworthy.
-            - Correlations that WEAKEN as n grows → likely spurious.
+            - Correlations that STRENGTHEN as n grows ג†’ trustworthy.
+            - Correlations that WEAKEN as n grows ג†’ likely spurious.
             - When a metric has no data at a short window but appears at longer
               windows, that's DATA SPARSITY, not emergence.
             - CONFIDENCE TIERS:
-              ROBUST = appears at ALL windows → highest confidence
-              STABLE = appears at 2+ adjacent windows → good confidence
-              EMERGING = only at shortest window → recent, needs monitoring
-              LONGER-WINDOW-ONLY = only at longer windows → needs more data
-              SPARSE = too few data points → inconclusive
+              ROBUST = appears at ALL windows ג†’ highest confidence
+              STABLE = appears at 2+ adjacent windows ג†’ good confidence
+              EMERGING = only at shortest window ג†’ recent, needs monitoring
+              LONGER-WINDOW-ONLY = only at longer windows ג†’ needs more data
+              SPARSE = too few data points ג†’ inconclusive
             - You do NOT give lifestyle advice. You ONLY interpret the
               statistical stability across time scales.""",
             verbose=True,
             allow_delegation=False,
             tools=[],  # Purely interprets pre-computed comparison context
-            llm=gemini_llm
+            llm=_get_llm()
         )
 
         self.weakness_identifier = Agent(
@@ -387,7 +393,7 @@ class AdvancedHealthAgents:
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
 
         self.sleep_analyst = Agent(
@@ -411,24 +417,24 @@ class AdvancedHealthAgents:
               means the watch was removed. Mark as SUSPECT and exclude from
               averages. Report both WITH and WITHOUT suspect nights.
             - NEXT-DAY IMPACT: For each night, show the next-day response:
-              "Night of Feb X: sleep_score=Y, deep=Z min → Feb X+1: HRV=A,
+              "Night of Feb X: sleep_score=Y, deep=Z min ג†’ Feb X+1: HRV=A,
               stress=B, readiness=C". Look for which sleep metrics best
               predict next-day outcomes.
             - SLEEP TIMING: If body_battery_change (BB gained during sleep)
               varies widely, that suggests inconsistent sleep timing or
               quality even when duration is similar.
-            - RESPIRATION: avg_respiration during sleep — elevated breathing
+            - RESPIRATION: avg_respiration during sleep ג€” elevated breathing
               rate (>16/min) can indicate illness, stress, or poor sleep
               environment.
             - Use Markov transitions and KL-divergence related to sleep
-              metrics if available — which conditions lead to GOOD vs BAD
+              metrics if available ג€” which conditions lead to GOOD vs BAD
               sleep states?
             - Do NOT give generic sleep hygiene advice. Every recommendation
               must cite a specific number from this week's data.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
-            llm=gemini_llm
+            llm=_get_llm()
         )
     
     def create_deep_analysis_tasks(self, analysis_period: int = 30) -> List[Task]:
@@ -586,7 +592,7 @@ class AdvancedHealthAgents:
         corr_block = ""
         if matrix_context:
             corr_block = (
-                "\n\nPRE-COMPUTED CORRELATION ANALYSIS (use this data — it is "
+                "\n\nPRE-COMPUTED CORRELATION ANALYSIS (use this data ג€” it is "
                 "comprehensive and saves tokens vs raw SQL queries):\n"
                 f"{matrix_context}\n"
             )
@@ -598,9 +604,9 @@ class AdvancedHealthAgents:
                 f"{comparison_context}\n"
             )
 
-        # ── Shared analytical rules that go into every task ──
+        # ג”€ג”€ Shared analytical rules that go into every task ג”€ג”€
         analysis_rules = (
-            "\n\n══════ ANALYTICAL RULES (MUST FOLLOW) ══════\n"
+            "\n\nג•ג•ג•ג•ג•ג• ANALYTICAL RULES (MUST FOLLOW) ג•ג•ג•ג•ג•ג•\n"
             "1. SAMPLE SIZE: Any correlation or prediction with n<20 is PRELIMINARY.\n"
             "   Say so explicitly. Do NOT build recommendations on n<10 findings.\n"
             "2. OUTLIER CHECK: Before calling something a 'trend', check if removing\n"
@@ -610,9 +616,9 @@ class AdvancedHealthAgents:
             "3. DATA QUALITY: A value of 0 for rem_sleep_sec or deep_sleep_sec,\n"
             "   or a sleep_score below 40, likely indicates a tracking failure\n"
             "   (watch removed during sleep, sensor malfunction). Flag it as\n"
-            "   SUSPECT DATA — do not treat it as a real physiological event.\n"
+            "   SUSPECT DATA ג€” do not treat it as a real physiological event.\n"
             "4. METRIC DISAMBIGUATION:\n"
-            "   - tr_acute_load (DB) → displayed as 'training_acute_load' = Garmin's\n"
+            "   - tr_acute_load (DB) ג†’ displayed as 'training_acute_load' = Garmin's\n"
             "     readiness-derived EPOC accumulation (changes even on rest days)\n"
             "   - daily_load_acute = 7-day rolling training load from Garmin bulk data\n"
             "   - training_load (activities table) = per-workout EPOC score\n"
@@ -624,59 +630,59 @@ class AdvancedHealthAgents:
             "   If HRV/RHR/stress normalized within 24h, that's a POSITIVE signal\n"
             "   (good recovery capacity), not a negative one.\n"
             "7. VARIANCE vs TREND: High day-to-day swings (e.g., sleep bouncing\n"
-            "   52→89→72→83→70) is VARIABILITY, not a decline. Report the range\n"
+            "   52ג†’89ג†’72ג†’83ג†’70) is VARIABILITY, not a decline. Report the range\n"
             "   and standard deviation, not just the average.\n"
             "8. USE ALL AVAILABLE DATA: You have ACWR, daily_load_acute,\n"
             "   daily_load_chronic, vo2_max_running, race_time_5k. Analyze them.\n"
             "   Don't ignore new columns just because they weren't there before.\n"
             "9. POSITIVE FINDINGS: Not everything is a problem. If RHR is improving,\n"
-            "   HRV is up, or ACWR is in the optimal zone — say so prominently.\n"
+            "   HRV is up, or ACWR is in the optimal zone ג€” say so prominently.\n"
             "10. NO GENERIC ADVICE: Every recommendation must cite a specific\n"
             "    correlation, day pair, or metric value that supports it.\n"
             "    'Get better sleep' is not a recommendation. 'Your REM variance\n"
             "    (0-108 min, CV=58%%) suggests inconsistent sleep timing'\n"
             "    is a recommendation.\n"
-            "══════════════════════════════════════════════\n"
+            "ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•\n"
         )
 
         db_hint = (
-            "\n\nDATABASE COLUMN REFERENCE — daily_metrics table\n"
+            "\n\nDATABASE COLUMN REFERENCE ג€” daily_metrics table\n"
             "(use ONLY these exact column names in SQL queries):\n\n"
             "  Heart & HRV:\n"
-            "    resting_hr — resting heart rate (bpm, lower=fitter)\n"
-            "    hrv_last_night — overnight HRV in ms (higher=better recovery)\n"
-            "    resting_hr_sleep — HR during sleep\n\n"
+            "    resting_hr ג€” resting heart rate (bpm, lower=fitter)\n"
+            "    hrv_last_night ג€” overnight HRV in ms (higher=better recovery)\n"
+            "    resting_hr_sleep ג€” HR during sleep\n\n"
             "  Stress:\n"
-            "    stress_level — daily avg stress 0-100 (lower=calmer)\n\n"
+            "    stress_level ג€” daily avg stress 0-100 (lower=calmer)\n\n"
             "  Sleep:\n"
-            "    sleep_score — Garmin sleep quality 0-100\n"
+            "    sleep_score ג€” Garmin sleep quality 0-100\n"
             "    sleep_seconds, deep_sleep_sec, rem_sleep_sec, light_sleep_sec\n"
-            "    avg_respiration — breaths/min during sleep\n"
-            "    body_battery_change — BB gained during sleep\n\n"
+            "    avg_respiration ג€” breaths/min during sleep\n"
+            "    body_battery_change ג€” BB gained during sleep\n\n"
             "  Body Battery:\n"
-            "    bb_charged — total energy recharged (higher=better rest)\n"
-            "    bb_drained — total energy spent (proxy for daily load)\n"
-            "    bb_peak, bb_low — daily max/min BB level\n\n"
+            "    bb_charged ג€” total energy recharged (higher=better rest)\n"
+            "    bb_drained ג€” total energy spent (proxy for daily load)\n"
+            "    bb_peak, bb_low ג€” daily max/min BB level\n\n"
             "  Activity & Steps:\n"
             "    total_steps, moderate_intensity_min, vigorous_intensity_min\n\n"
             "  Training Readiness:\n"
-            "    training_readiness — Garmin readiness score 0-100\n"
-            "    tr_acute_load — short-term training load (EPOC)\n\n"
+            "    training_readiness ג€” Garmin readiness score 0-100\n"
+            "    tr_acute_load ג€” short-term training load (EPOC)\n\n"
             "  Cardio Fitness (from Garmin bulk data):\n"
-            "    vo2_max_running — VO2Max for running (mL/kg/min, higher=fitter)\n"
-            "    vo2_max_running_delta — 7-day change in VO2Max (positive=improving)\n"
-            "    vo2_max_cycling — VO2Max for cycling\n"
-            "    race_time_5k — predicted 5K time in seconds (lower=faster)\n"
-            "    race_time_10k — predicted 10K time in seconds\n"
-            "    race_time_5k_delta — 7-day change (negative=getting faster)\n\n"
+            "    vo2_max_running ג€” VO2Max for running (mL/kg/min, higher=fitter)\n"
+            "    vo2_max_running_delta ג€” 7-day change in VO2Max (positive=improving)\n"
+            "    vo2_max_cycling ג€” VO2Max for cycling\n"
+            "    race_time_5k ג€” predicted 5K time in seconds (lower=faster)\n"
+            "    race_time_10k ג€” predicted 10K time in seconds\n"
+            "    race_time_5k_delta ג€” 7-day change (negative=getting faster)\n\n"
             "  Training Load:\n"
-            "    daily_load_acute — short-term load (7-day)\n"
-            "    daily_load_chronic — long-term load (28-day)\n"
-            "    acwr — acute:chronic workload ratio (<0.8 detraining, "
+            "    daily_load_acute ג€” short-term load (7-day)\n"
+            "    daily_load_chronic ג€” long-term load (28-day)\n"
+            "    acwr ג€” acute:chronic workload ratio (<0.8 detraining, "
             "0.8-1.3 optimal, >1.5 injury risk)\n\n"
             "  Environment:\n"
-            "    heat_acclimation_pct — heat adaptation 0-100%\n"
-            "    altitude_acclimation — altitude adaptation score\n\n"
+            "    heat_acclimation_pct ג€” heat adaptation 0-100%\n"
+            "    altitude_acclimation ג€” altitude adaptation score\n\n"
             "  Weight: weight_kg\n"
             "  Hydration: hydration_value_ml\n\n"
             "  activities table columns:\n"
@@ -696,7 +702,7 @@ class AdvancedHealthAgents:
             Task(
                 description=f"""
                 You are given a full pre-computed correlation analysis.
-                Your job is to interpret EVERY section of it — skip NOTHING.
+                Your job is to interpret EVERY section of it ג€” skip NOTHING.
 
                 Go through each section in order and for each one report:
                 - SECTION NAME
@@ -707,14 +713,14 @@ class AdvancedHealthAgents:
                 MANDATORY SECTIONS (you must cover ALL of these):
                 1. Training Intensity Classification
                 2. Same-Day Correlations (top 5 most meaningful pairs)
-                3. Next-Day Predictors (top 5 — these show causality)
+                3. Next-Day Predictors (top 5 ג€” these show causality)
                 4. Autoregressive Persistence (which metrics persist day-to-day)
-                5. Distributions (normal vs skewed — affects which stats are valid)
+                5. Distributions (normal vs skewed ג€” affects which stats are valid)
                 6. Recent Anomalies (what's unusual in the last 3 days)
-                7. Conditioned AR(1) — THIS IS THE MOST IMPORTANT SECTION.
+                7. Conditioned AR(1) ג€” THIS IS THE MOST IMPORTANT SECTION.
                    For each model listed, explain:
                    - What variables predict what
-                   - The R² and how much it improves over simple persistence
+                   - The Rֲ² and how much it improves over simple persistence
                    - What this means practically
                    - Sample size and whether it's reliable
                 8. Markov State Transitions (state stickiness + sample sizes)
@@ -735,7 +741,7 @@ class AdvancedHealthAgents:
                 Perform a CROSS-TIMEFRAME STABILITY ANALYSIS using the
                 benchmark comparison data below. You have full correlation
                 matrices for EVERY available time window (the number of
-                windows depends on how much data exists — could be 2-9
+                windows depends on how much data exists ג€” could be 2-9
                 windows ranging from 7 days to 365 days).
 
                 {comparison_block}
@@ -751,8 +757,8 @@ class AdvancedHealthAgents:
                 2. PREDICTOR STABILITY: Same for next-day predictors.
                    Track r and n across windows. Rising n + stable r = reliable.
 
-                3. PERSISTENCE EVOLUTION: AR(1) R² across windows.
-                   | Metric | 7d R² | 14d R² | 21d R² | 30d R² | Verdict |
+                3. PERSISTENCE EVOLUTION: AR(1) Rֲ² across windows.
+                   | Metric | 7d Rֲ² | 14d Rֲ² | 21d Rֲ² | 30d Rֲ² | Verdict |
 
                 4. MARKOV & KL MATURATION: Note which window first produces
                    Markov/KL results. Below 20 transitions = PRELIMINARY.
@@ -766,7 +772,7 @@ class AdvancedHealthAgents:
                    ROBUST / STABLE / EMERGING / LONGER-WINDOW-ONLY / SPARSE
 
                 If a window has too few data points for a section, say
-                'DATA SPARSITY' — don't say the pattern 'disappeared'.
+                'DATA SPARSITY' ג€” don't say the pattern 'disappeared'.
                 {ctx}
                 """,
                 agent=self.matrix_comparator,
@@ -777,7 +783,7 @@ class AdvancedHealthAgents:
                 description=f"""
                 Find 3-5 non-obvious patterns in this week's data.
                 The Matrix Analyst has already interpreted the correlation
-                tables — do NOT repeat that analysis. Focus on DAY-BY-DAY
+                tables ג€” do NOT repeat that analysis. Focus on DAY-BY-DAY
                 patterns in the actual data that go BEYOND what correlations show.
 
                 REQUIRED STEPS:
@@ -790,10 +796,10 @@ class AdvancedHealthAgents:
                    ORDER BY date
 
                 2. FLAG any suspect data: rem_sleep=0, sleep_score<40, or
-                   any metric that's a clear outlier (>2σ from the week's mean).
+                   any metric that's a clear outlier (>2ֿƒ from the week's mean).
                    Mark these as SUSPECT and note how they affect averages.
 
-                3. Look at DAY PAIRS (what happened on day X → day X+1):
+                3. Look at DAY PAIRS (what happened on day X ג†’ day X+1):
                    - After the hardest training day, did recovery metrics
                      bounce back the next day? How quickly?
                    - After the worst sleep night, what happened to stress
@@ -819,7 +825,7 @@ class AdvancedHealthAgents:
                 description=f"""
                 Create a week-over-week performance comparison.
 
-                REQUIRED FORMAT — for each metric, report:
+                REQUIRED FORMAT ג€” for each metric, report:
                 | Metric | Last Week | This Week | Change | Verdict |
 
                 REQUIRED STEPS:
@@ -832,7 +838,7 @@ class AdvancedHealthAgents:
 
                 2. For each metric, report:
                    - Raw averages for both weeks
-                   - If any day is a clear outlier (>2σ), compute the average
+                   - If any day is a clear outlier (>2ֿƒ), compute the average
                      WITH and WITHOUT that day. Show both.
                    - Day range (min-max) for this week to show variability
                    - Verdict: IMPROVED (>10%% better), STABLE (<10%% change),
@@ -858,7 +864,7 @@ class AdvancedHealthAgents:
 
             Task(
                 description=f"""
-                Assess recovery capacity — not just current state,
+                Assess recovery capacity ג€” not just current state,
                 but HOW WELL the body recovers from hard efforts.
 
                 REQUIRED STEPS:
@@ -870,15 +876,15 @@ class AdvancedHealthAgents:
                    - Did resting HR go up or down?
                    - Did bb_charged recover?
                    - How was the sleep_score?
-                   Format: "Feb X (HARD): bb_drained=Y → Feb X+1: HRV=Z (+/-),
+                   Format: "Feb X (HARD): bb_drained=Y ג†’ Feb X+1: HRV=Z (+/-),
                    RHR=W (+/-), bb_charged=V"
 
                 3. OVERTRAINING CHECKLIST (answer each yes/no with evidence):
-                   □ Is resting HR trending upward over 5+ consecutive days?
-                   □ Is HRV trending downward over 5+ consecutive days?
-                   □ Is sleep quality declining over 5+ consecutive days?
-                   □ Is the user reporting higher stress levels consistently?
-                   □ Is ACWR > 1.5?
+                   ג–¡ Is resting HR trending upward over 5+ consecutive days?
+                   ג–¡ Is HRV trending downward over 5+ consecutive days?
+                   ג–¡ Is sleep quality declining over 5+ consecutive days?
+                   ג–¡ Is the user reporting higher stress levels consistently?
+                   ג–¡ Is ACWR > 1.5?
                    Overtraining requires YES on 3+ of these. Otherwise, NOT overtraining.
 
                 4. Based on the bounce-back analysis, what is the user's
@@ -894,7 +900,7 @@ class AdvancedHealthAgents:
 
             Task(
                 description=f"""
-                Analyze trends RIGOROUSLY — only report trends that survive scrutiny.
+                Analyze trends RIGOROUSLY ג€” only report trends that survive scrutiny.
 
                 REQUIRED STEPS:
                 For each of these metrics: HRV, resting HR, sleep_score,
@@ -938,7 +944,7 @@ class AdvancedHealthAgents:
                    ORDER BY date
 
                 2. For each training day, build a DAY STORY:
-                   "Feb X: [what they did] → Feb X+1: [how body responded]"
+                   "Feb X: [what they did] ג†’ Feb X+1: [how body responded]"
                    Include specific numbers for HRV, RHR, sleep_score, stress, BB.
 
                 3. Classify activities properly:
@@ -978,28 +984,28 @@ class AdvancedHealthAgents:
                    WHERE date >= CURRENT_DATE - INTERVAL '7 days'
                    ORDER BY date
 
-                2. ARCHITECTURE TABLE — for each night:
+                2. ARCHITECTURE TABLE ג€” for each night:
                    | Date | Score | Total hrs | Deep min (%%) | REM min (%%) | Light min (%%) | Resp | BB Change |
                    Flag any night with deep=0, REM=0, or score<40 as SUSPECT.
 
-                3. AVERAGES — compute with and without suspect nights:
+                3. AVERAGES ג€” compute with and without suspect nights:
                    - Mean sleep_score, total hours, deep%%, REM%%, light%%
                    - Compare to norms: Deep 15-20%%, REM 20-25%%, Light 50-60%%
                    - Is the user getting enough deep sleep? Enough REM?
 
                 4. CONSISTENCY:
                    - CV (std/mean) for sleep_score and total sleep time
-                   - CV > 15%% = inconsistent — this is a problem even if
-                     the average is fine. Report the spread (min→max).
+                   - CV > 15%% = inconsistent ג€” this is a problem even if
+                     the average is fine. Report the spread (minג†’max).
 
-                5. NEXT-DAY IMPACT — for each night, show:
-                   "Night of [date]: score=X, deep=Y min →
+                5. NEXT-DAY IMPACT ג€” for each night, show:
+                   "Night of [date]: score=X, deep=Y min ג†’
                     Next day: HRV=A, stress=B, readiness=C"
                    Which sleep metric is the BEST predictor of next-day
                    readiness? Is it total time, deep%%, REM%%, or score?
 
                 6. BODY BATTERY RECHARGE:
-                   - body_battery_change during sleep — how much energy
+                   - body_battery_change during sleep ג€” how much energy
                      was recovered? Does it correlate with sleep quality?
                    - Nights with low BB recharge despite decent sleep_score
                      suggest other factors (stress, late meals, timing).
@@ -1047,7 +1053,7 @@ class AdvancedHealthAgents:
                    - If the data is too sparse to confidently pick a bottleneck,
                      say so. "Insufficient data to determine" is a valid answer.
 
-                3. QUICK WINS — each must have:
+                3. QUICK WINS ג€” each must have:
                    - THE SPECIFIC metric you expect to improve
                    - THE EVIDENCE (correlation value, day-pair example,
                      KL-divergence shift) that supports this action
@@ -1104,7 +1110,7 @@ class AdvancedHealthAgents:
         """Run full analysis with all agents"""
         
         log.info("\n" + "="*60)
-        log.info("🤖 RUNNING COMPREHENSIVE HEALTH ANALYSIS")
+        log.info("נ₪– RUNNING COMPREHENSIVE HEALTH ANALYSIS")
         log.info("   This will take a few minutes...")
         log.info("="*60 + "\n")
         
@@ -1127,7 +1133,7 @@ class AdvancedHealthAgents:
         result = crew.kickoff()
         
         log.info("\n" + "="*60)
-        log.info("✅ ANALYSIS COMPLETE")
+        log.info("ג… ANALYSIS COMPLETE")
         log.info("="*60 + "\n")
         
         return result
@@ -1138,7 +1144,7 @@ class AdvancedHealthAgents:
         Returns the COMBINED output from all 8 agents, not just the last one.
         """
 
-        log.info("\n  Generating Weekly Summary (9 agents)…\n")
+        log.info("\n  Generating Weekly Summary (9 agents)ג€¦\n")
 
         tasks = self.create_weekly_summary_tasks(
             matrix_context=matrix_context,
@@ -1193,7 +1199,7 @@ class AdvancedHealthAgents:
     def run_goal_analysis(self, goal: str) -> str:
         """Analyze progress toward specific goal"""
         
-        log.info(f"\n🎯 Analyzing progress toward: {goal}\n")
+        log.info(f"\nנ¯ Analyzing progress toward: {goal}\n")
         
         tasks = self.create_goal_progress_tasks(goal)
         

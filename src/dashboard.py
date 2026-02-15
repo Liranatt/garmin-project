@@ -33,7 +33,6 @@ def _get_conn_str() -> str:
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from visualizations import HealthDataVisualizer
-from enhanced_agents import AdvancedHealthAgents
 
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
@@ -65,6 +64,7 @@ def get_visualizer():
 
 @st.cache_resource
 def get_agents():
+    from enhanced_agents import AdvancedHealthAgents
     return AdvancedHealthAgents()
 
 
