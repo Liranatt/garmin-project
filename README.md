@@ -109,6 +109,7 @@ The email degrades gracefully — if credentials aren't set, the pipeline runs n
 * **Daily Input Form:** Log subjective data (energy, soreness, nutrition) to enrich analysis
 * **Long-Term Memory:** The Synthesizer tracks past recommendations and adjusts advice based on outcomes
 * **Privacy Focused:** Personal data stays in your private database; only statistical summaries go to the LLM
+* **Bulk Import Automation:** automated flow from Garmin Data Export -> ZIP Download -> DB Ingest -> Production Merge.
 
 ## 🛠️ Tech Stack
 

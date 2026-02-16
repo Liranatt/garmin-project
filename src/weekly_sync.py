@@ -282,7 +282,28 @@ def main():
                         help="Analyze only — skip Garmin fetch")
     parser.add_argument("--days", type=int, default=7,
                         help="Days to fetch (default: 7)")
+    parser.add_argument("--bulk-import", action="store_true",
+                        help="Run bulk import automation (email + zip)")
     args = parser.parse_args()
+
+    if args.bulk_import:
+        # Import here to avoid circular dependencies if any
+        try:
+            from bulk_import import run_bulk_import
+            log.info("Starting BULK IMPORT...")
+            if not run_bulk_import(auto=True):
+                log.error("Bulk import failed.")
+                sys.exit(1)
+            # If bulk import succeeds, we might want to continue with sync or stop.
+            # Usually bulk import is heavy, so maybe stop? 
+            # Or continue to analyze the new data.
+            # Let's continue to analyze if --analyze is set, otherwise exit.
+            if not args.analyze and not args.fetch:
+                log.info("Bulk import finished. Exiting (no other flags set).")
+                sys.exit(0)
+        except ImportError:
+            log.error("Could not import src.bulk_import. Check project structure.")
+            sys.exit(1)
 
     pipeline = WeeklySyncPipeline(fetch_days=args.days)
     success = pipeline.run(

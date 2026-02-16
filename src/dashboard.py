@@ -5,8 +5,8 @@ Robust multi-page analytics dashboard with:
   • Multi-timeframe trend explorer (7d/14d/21d/30d/60d/90d)
   • Correlation heatmaps, lag-1 matrices, Markov diagrams
   • Date deep-dive with full-day report
-  • Real-time agent chat with 9 specialists
-  • Parallel 9-agent analysis
+  • Real-time agent chat with 5 specialists
+  • Parallel 5-agent analysis
   • Goals & benchmark tracking
 
 Run:  streamlit run src/dashboard.py
@@ -1474,14 +1474,14 @@ def _page_chat(page_key: str, context: str = ""):
 
 
 # ══════════════════════════════════════════════════════════════
-#  6. AGENT CHAT — real-time conversation with all 9 specialists
+#  6. AGENT CHAT — real-time conversation with all 5 specialists
 # ══════════════════════════════════════════════════════════════
 
 
 def pg_chat(df, days):
     st.markdown(
         '<div class="pt">Agent Chat</div>'
-        '<div class="ps">Talk to 9 specialized AI agents — they have full database access + correlation data</div>',
+        '<div class="ps">Talk to 5 specialized AI agents — they have full database access + correlation data</div>',
         unsafe_allow_html=True,
     )
 
@@ -1751,7 +1751,7 @@ def _multi_agent_chat(question: str, matrix_context: str = "") -> dict:
 def pg_ai(df, days):
     st.markdown(
         '<div class="pt">Full AI Analysis</div>'
-        '<div class="ps">All 9 specialized agents analyze your data in parallel</div>',
+        '<div class="ps">All 5 specialized agents analyze your data in parallel</div>',
         unsafe_allow_html=True,
     )
 
