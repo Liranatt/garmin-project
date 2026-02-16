@@ -1,7 +1,7 @@
 # Why the Math Mathing & Why Agents Aren't Hallucinating 🧠📐
 
 This document deconstructs the mathematical and algorithmic infrastructure of the **Garmin Health Intelligence** system.
-The core engineering philosophy here is **Determinism before Semantics**: we solve the "Black Box" problem inherent in Large Language Models (LLMs) by strictly separating the **Mathematical Engine** (which calculates truth) from the **AI Agents** (which interpret meaning).
+The core engineering philosophy here is **Determinism before Semantics**: I tried to solve the "Black Box" problem inherent in Large Language Models (LLMs) by strictly separating the **Mathematical Engine** (which calculates truth) from the **AI Agents** (which interpret meaning).
 
 ---
 
