@@ -702,7 +702,7 @@ def pg_overview(df, days):
                 line=dict(color=clr, width=2.5), marker=dict(size=5),
             ))
     fig.update_layout(**PL, height=300)
-    st.plotly_chart(fig, use_container_width=True, key="overview_7d")
+    st.plotly_chart(fig, width="stretch", key="overview_7d")
 
     # ── Recent activities ──
     st.markdown('<div class="sh">Recent Activities</div>', unsafe_allow_html=True)
@@ -795,7 +795,7 @@ def pg_trends(df, days):
                     })
         if stats_data:
             st.dataframe(
-                pd.DataFrame(stats_data), use_container_width=True, hide_index=True,
+                pd.DataFrame(stats_data), width="stretch", hide_index=True,
             )
 
         # Overlay chart
@@ -809,7 +809,7 @@ def pg_trends(df, days):
                     line=dict(color=PALETTE[i % len(PALETTE)], width=2),
                 ))
         fig.update_layout(**PL, height=350, title=_pretty(sel_metric))
-        st.plotly_chart(fig, use_container_width=True, key="trends_cmp")
+        st.plotly_chart(fig, width="stretch", key="trends_cmp")
 
     _page_chat("trends", "The user is viewing multi-timeframe trend analysis.")
 
@@ -838,7 +838,7 @@ def _render_trend_window(wd, window_days):
                          gridcolor="rgba(255,255,255,0.04)")
         fig.update_yaxes(title_text="RHR (bpm)", secondary_y=True,
                          gridcolor="rgba(255,255,255,0.04)")
-        st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_hrv_rhr")
+        st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_hrv_rhr")
 
         # Stress vs Body Battery
         st.markdown('<div class="sh">Stress vs Body Battery</div>', unsafe_allow_html=True)
@@ -859,7 +859,7 @@ def _render_trend_window(wd, window_days):
                     line=dict(color=clr, width=2, dash=dash),
                 ))
         fig.update_layout(**PL, height=280)
-        st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_stress_bb")
+        st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_stress_bb")
 
         # Training readiness bars
         if "training_readiness" in wd.columns:
@@ -873,7 +873,7 @@ def _render_trend_window(wd, window_days):
             fig.add_trace(go.Scatter(x=wd["date"], y=ma, name="7d avg",
                                      line=dict(color="#fff", width=2, dash="dot")))
             fig.update_layout(**PL, height=250)
-            st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_readiness")
+            st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_readiness")
 
     with tab_t:
         try:
@@ -900,7 +900,7 @@ def _render_trend_window(wd, window_days):
                 fig.add_trace(go.Bar(x=sub["week"], y=sub["mins"], name=str(atype),
                                      marker_color=PALETTE[i % len(PALETTE)]))
             fig.update_layout(**PL, height=280, barmode="stack", yaxis_title="Minutes")
-            st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_volume")
+            st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_volume")
 
             # HR by activity
             st.markdown('<div class="sh">Heart Rate by Activity</div>', unsafe_allow_html=True)
@@ -917,7 +917,7 @@ def _render_trend_window(wd, window_days):
                 ))
                 fig.update_layout(**PL, height=280,
                                   xaxis_title="Duration (min)", yaxis_title="Avg HR")
-                st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_hr_act")
+                st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_hr_act")
 
             # Training effects
             if "aerobic_training_effect" in acts_c.columns:
@@ -934,7 +934,7 @@ def _render_trend_window(wd, window_days):
                         fig.add_trace(go.Bar(y=labels, x=recent["anaerobic_training_effect"],
                                              name="Anaerobic", orientation="h", marker_color="#667eea"))
                     fig.update_layout(**PL, height=max(250, len(recent)*40), barmode="group")
-                    st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_te")
+                    st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_te")
 
     with tab_s:
         has_sleep = all(c in wd.columns for c in ["deep_sleep_sec", "rem_sleep_sec", "sleep_seconds"])
@@ -955,7 +955,7 @@ def _render_trend_window(wd, window_days):
             fig.add_trace(go.Bar(x=sd["date"], y=sd["light_h"], name="Light",
                                  marker_color="rgba(255,255,255,0.15)"))
             fig.update_layout(**PL, height=280, barmode="stack", yaxis_title="Hours")
-            st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_sleep_arch")
+            st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_sleep_arch")
 
         # Sleep score trend
         if "sleep_score" in wd.columns:
@@ -968,7 +968,7 @@ def _render_trend_window(wd, window_days):
             fig.add_trace(go.Scatter(x=wd["date"], y=ma, name="7d avg",
                                      line=dict(color="#fff", width=2, dash="dot")))
             fig.update_layout(**PL, height=250)
-            st.plotly_chart(fig, use_container_width=True, key=f"tw{window_days}_sleep_score")
+            st.plotly_chart(fig, width="stretch", key=f"tw{window_days}_sleep_score")
 
         # Sleep stats
         st.markdown('<div class="sh">Sleep Stats</div>', unsafe_allow_html=True)
@@ -1043,7 +1043,7 @@ def pg_correlations(df, days):
                 yaxis=dict(tickfont=dict(size=9), gridcolor="rgba(255,255,255,0.04)"),
                 margin=dict(l=120, b=120, t=30, r=20),
             )
-            st.plotly_chart(fig, use_container_width=True, key="corr_heatmap")
+            st.plotly_chart(fig, width="stretch", key="corr_heatmap")
 
     with tab2:
         st.markdown('<div class="sh">Top Correlated Pairs</div>', unsafe_allow_html=True)
@@ -1055,6 +1055,8 @@ def pg_correlations(df, days):
                 clean = df[[a, b]].dropna()
                 if len(clean) < 5:
                     continue
+                if clean[a].std() < 1e-10 or clean[b].std() < 1e-10:
+                    continue
                 from scipy import stats as _sp
                 r, p = _sp.pearsonr(clean[a], clean[b])
                 if abs(r) >= 0.3 and p < 0.05:
@@ -1065,7 +1067,7 @@ def pg_correlations(df, days):
                                       "Moderate" if abs(r) > 0.5 else "Weak")})
         if pairs:
             pairs_df = pd.DataFrame(pairs).sort_values("r", key=abs, ascending=False).head(25)
-            st.dataframe(pairs_df, use_container_width=True, hide_index=True)
+            st.dataframe(pairs_df, width="stretch", hide_index=True)
         else:
             st.info("No significant correlations found.")
 
@@ -1101,7 +1103,7 @@ def pg_correlations(df, days):
         if lag_results:
             lag_df = pd.DataFrame(lag_results).sort_values("r", key=abs, ascending=False).head(20)
             display_cols = [c for c in lag_df.columns if not c.startswith("_")]
-            st.dataframe(lag_df[display_cols], use_container_width=True, hide_index=True)
+            st.dataframe(lag_df[display_cols], width="stretch", hide_index=True)
 
             # Visualize top 5 lag-1
             st.markdown('<div class="sh">Top 5 Predictive Relationships</div>',
@@ -1120,7 +1122,7 @@ def pg_correlations(df, days):
                                   xaxis_title=f"Yesterday's {pred}",
                                   yaxis_title=f"Today's {tgt}",
                                   title=f"r={row['r']:.3f}, n={row['n']}")
-                st.plotly_chart(fig, use_container_width=True, key=f"lag1_{lag_idx}")
+                st.plotly_chart(fig, width="stretch", key=f"lag1_{lag_idx}")
         else:
             st.info("No significant lag-1 predictors found.")
 
@@ -1207,7 +1209,7 @@ def pg_dive(df, days):
                                  mode="lines", name="14d MA",
                                  line=dict(color="#f5c542", width=1.5, dash="dash")))
     fig.update_layout(**PL, height=320)
-    st.plotly_chart(fig, use_container_width=True, key="dive_ts")
+    st.plotly_chart(fig, width="stretch", key="dive_ts")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1218,7 +1220,7 @@ def pg_dive(df, days):
                                    marker=dict(color="rgba(0,245,160,0.4)",
                                                line=dict(color="#00f5a0", width=1))))
         fig.update_layout(**PL, height=250, bargap=0.05)
-        st.plotly_chart(fig, use_container_width=True, key="dive_dist")
+        st.plotly_chart(fig, width="stretch", key="dive_dist")
 
     with c2:
         # Day-of-week analysis
@@ -1233,7 +1235,7 @@ def pg_dive(df, days):
             fig.add_trace(go.Bar(x=dow_means.index, y=dow_means.values,
                                  marker_color=PALETTE[:len(dow_means)]))
             fig.update_layout(**PL, height=250)
-            st.plotly_chart(fig, use_container_width=True, key="dive_dow")
+            st.plotly_chart(fig, width="stretch", key="dive_dow")
 
     # Correlations with this metric
     st.markdown('<div class="sh">Correlates With...</div>', unsafe_allow_html=True)
@@ -1244,13 +1246,15 @@ def pg_dive(df, days):
         clean = wd[[metric, other]].dropna()
         if len(clean) < 5:
             continue
+        if clean[metric].std() < 1e-10 or clean[other].std() < 1e-10:
+            continue
         from scipy import stats as _sp
         r, p = _sp.pearsonr(clean[metric], clean[other])
         if p < 0.1:
             corr_list.append({"Metric": _pretty(other), "r": round(r, 3), "p": round(p, 4)})
     if corr_list:
         corr_df = pd.DataFrame(corr_list).sort_values("r", key=abs, ascending=False).head(10)
-        st.dataframe(corr_df, use_container_width=True, hide_index=True)
+        st.dataframe(corr_df, width="stretch", hide_index=True)
 
     _page_chat("deepdive", f"The user is deep-diving into the metric '{_pretty(metric)}' over {window} days.")
 
@@ -1335,7 +1339,7 @@ def pg_date_explorer(df, days):
             if pd.notna(v):
                 rows.append({"Metric": lb, "Value": f"{v:.1f}" if isinstance(v, float) else str(v)})
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     with c2:
         st.markdown('<div class="sh">Sleep Architecture</div>', unsafe_allow_html=True)
@@ -1355,7 +1359,7 @@ def pg_date_explorer(df, days):
                 else:
                     rows.append({"Metric": lb, "Value": f"{v:.1f}" if isinstance(v, float) else str(v)})
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     # Activities that day
     st.markdown(f'<div class="sh">Activities on {sd_display}</div>', unsafe_allow_html=True)
@@ -1370,7 +1374,7 @@ def pg_date_explorer(df, days):
             params=(sd_str,),
         )
         if not acts.empty:
-            st.dataframe(acts, use_container_width=True, hide_index=True)
+            st.dataframe(acts, width="stretch", hide_index=True)
         else:
             st.info("No activities recorded.")
     except Exception:
@@ -1386,7 +1390,7 @@ def pg_date_explorer(df, days):
         ctx_metrics = [c for c in ["date", "resting_hr", "hrv_last_night", "sleep_score",
                                     "stress_level", "training_readiness", "bb_charged",
                                     "bb_peak", "total_steps"] if c in ctx.columns]
-        st.dataframe(ctx[ctx_metrics], use_container_width=True, hide_index=True)
+        st.dataframe(ctx[ctx_metrics], width="stretch", hide_index=True)
 
         # Mini chart
         fig = go.Figure()
@@ -1403,7 +1407,7 @@ def pg_date_explorer(df, days):
         # Mark selected date
         fig.add_vline(x=sd_str, line_dash="dash", line_color="rgba(255,255,255,0.3)")
         fig.update_layout(**PL, height=250)
-        st.plotly_chart(fig, use_container_width=True, key="date_ctx")
+        st.plotly_chart(fig, width="stretch", key="date_ctx")
 
     # ── Ask agents about this day ──
     st.markdown('<div class="sh">Ask Agents About This Day</div>', unsafe_allow_html=True)
@@ -2091,8 +2095,9 @@ def pg_goals(df, days):
                 line=dict(color=color, width=2.5), marker=dict(size=5),
                 fill="tozeroy", fillcolor=f"rgba({r_hex},{g_hex},{b_hex},0.05)",
             ))
-            fig.update_layout(**PL, height=150, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig, use_container_width=True, key=f"goal_{key}")
+            _goals_layout = {k: v for k, v in PL.items() if k != "margin"}
+            fig.update_layout(**_goals_layout, height=150, margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig, width="stretch", key=f"goal_{key}")
 
         with c2:
             st.markdown(
@@ -2197,7 +2202,7 @@ def pg_daily_input(df: pd.DataFrame, days: int):
             )
 
             submitted_wellness = st.form_submit_button(
-                "💾 Save Wellness Log", use_container_width=True,
+                "💾 Save Wellness Log", width="stretch",
             )
 
         if submitted_wellness:
@@ -2241,7 +2246,7 @@ def pg_daily_input(df: pd.DataFrame, days: int):
             )
 
             submitted_nutrition = st.form_submit_button(
-                "➕ Add Meal", use_container_width=True,
+                "➕ Add Meal", width="stretch",
             )
 
         if submitted_nutrition and calories > 0:
