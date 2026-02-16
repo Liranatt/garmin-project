@@ -1,7 +1,7 @@
 name: Weekly Health Sync
 on:
   schedule:
-    - cron: '0 6 * * 0'  # Every Sunday 06:00 UTC
+    - cron: '0 6 * * *'  # Every Day 06:00 UTC
   workflow_dispatch:       # Manual trigger from GitHub UI
 
 jobs:

@@ -59,6 +59,14 @@ The project operates as a fully automated weekly pipeline (runs every Sunday via
 > [!TIP]
 > **For a deep dive into the math and agent design, see [Why the Math Is Mathing & Why Agents Aren't Hallucinating](why_the_math_mathing_and_why_agents_arent_hallucinating.md)** — a 500+ line technical document explaining every formula, every statistical test, and every anti-hallucination guardrail.
 
+### Automation Schedule
+
+| Task | Frequency | Platform | Purpose |
+|---|---|---|---|
+| **Daily Sync** | Daily (06:00 UTC) | GitHub Actions | Fetches recent data (sleep, steps, HR) for Dashboard. |
+| **Export Reminder** | Weekly (Sun 08:00 AM) | Heroku Scheduler | Reminds you to click "Garmin Export". |
+| **Bulk Import** | Daily (02:00 AM) | Heroku Scheduler | Checks for & processes the export file you requested. |
+
 ### Weekly Reminder Setup
 To get a weekly email reminding you to click "Export":
 1. Add a job to Heroku Scheduler.
