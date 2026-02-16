@@ -39,6 +39,7 @@ log = logging.getLogger("weekly_sync")
 from enhanced_fetcher import EnhancedGarminDataFetcher
 from correlation_engine import CorrelationEngine
 from enhanced_agents import AdvancedHealthAgents
+from email_notifier import send_weekly_email
 
 
 class WeeklySyncPipeline:
@@ -81,6 +82,10 @@ class WeeklySyncPipeline:
                 # Step 4: Save insights
                 log.info("Step 4/4: Saving insights…")
                 self._save_insights(insights)
+
+                # Step 5: Email notification
+                log.info("Step 5: Sending email notification…")
+                self._send_email(insights)
             else:
                 insights = "(AI analysis skipped)"
                 log.info("Step 3-4/4: SKIPPED (--fetch mode)")
@@ -237,6 +242,16 @@ class WeeklySyncPipeline:
         cur.close()
         conn.close()
         log.info("Insights saved for week %s", week_start)
+
+    # ─── Step 5: Email ────────────────────────────────────────
+
+    def _send_email(self, insights: str):
+        """Send weekly recommendations email."""
+        try:
+            week_start = date.today() - timedelta(days=date.today().weekday())
+            send_weekly_email(insights, week_date=week_start)
+        except Exception as e:
+            log.warning("Email notification failed (non-fatal): %s", e)
 
     # ─── Summary ──────────────────────────────────────────────
 
