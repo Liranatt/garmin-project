@@ -234,30 +234,48 @@ def _extract_summary_html(insights: str) -> str:
 #  Main send function
 # ═══════════════════════════════════════════════════════════════
 
-def send_weekly_email(insights: str, week_date: date = None) -> bool:
-    """Send the weekly health insights email.
-
-    Parameters
-    ----------
-    insights : str
-        Combined text output from all agents.
-    week_date : date, optional
-        The week this report covers. Defaults to current week start.
-
-    Returns
-    -------
-    bool
-        True if email sent successfully, False otherwise.
-    """
+def send_generic_email(subject: str, html_body: str, plain_text: str = None) -> bool:
+    """Send a generic HTML email using the configured SMTP settings."""
     if not SENDER_PASSWORD:
-        log.warning("EMAIL_APP_PASSWORD not set in .env — skipping email notification.")
-        log.info("To enable email: set EMAIL_APP_PASSWORD to a Gmail App Password.")
+        log.warning("EMAIL_APP_PASSWORD not set in .env — skipping email.")
         return False
 
     if not SENDER_EMAIL:
-        log.warning("No sender email configured — skipping email notification.")
+        log.warning("No sender email configured — skipping email.")
         return False
 
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECIPIENT_EMAIL
+
+    if not plain_text:
+         # Naive strip tags if no plain text provided
+        plain_text = re.sub('<[^<]+?>', '', html_body)
+
+    msg.attach(MIMEText(plain_text, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, [RECIPIENT_EMAIL], msg.as_string())
+
+        log.info("📧 Email sent to %s: '%s'", RECIPIENT_EMAIL, subject)
+        return True
+
+    except smtplib.SMTPAuthenticationError:
+        log.error("Email auth failed. Check EMAIL_APP_PASSWORD.")
+        return False
+    except Exception as e:
+        log.error("Failed to send email: %s", e)
+        return False
+
+def send_weekly_email(insights: str, week_date: date = None) -> bool:
+    """Send the weekly health insights email."""
     if week_date is None:
         today = date.today()
         week_date = today - __import__("datetime").timedelta(days=today.weekday())
@@ -272,37 +290,8 @@ def send_weekly_email(insights: str, week_date: date = None) -> bool:
         summary_html=summary_html,
         generation_date=date.today().strftime("%Y-%m-%d"),
     )
-
-    # Build email
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🏃 Weekly Health Report — {week_date.strftime('%b %d')}"
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = RECIPIENT_EMAIL
-
-    # Plain-text fallback (just the raw insights, truncated)
+    
+    subject = f"🏃 Weekly Health Report — {week_date.strftime('%b %d')}"
     plain_text = insights[:3000] if len(insights) > 3000 else insights
-    msg.attach(MIMEText(plain_text, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
-
-    # Send
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, [RECIPIENT_EMAIL], msg.as_string())
-
-        log.info("📧 Weekly email sent to %s", RECIPIENT_EMAIL)
-        return True
-
-    except smtplib.SMTPAuthenticationError:
-        log.error(
-            "Email authentication failed. Make sure EMAIL_APP_PASSWORD is a "
-            "valid Gmail App Password (not your regular password).\n"
-            "Generate one at: https://myaccount.google.com/apppasswords"
-        )
-        return False
-    except Exception as e:
-        log.error("Failed to send email: %s", e)
-        return False
+    
+    return send_generic_email(subject, html_body, plain_text)

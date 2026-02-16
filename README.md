@@ -52,11 +52,18 @@ The project operates as a fully automated weekly pipeline (runs every Sunday via
 | **AI Agents** | `src/enhanced_agents.py` (1,038 lines) | 5 constrained specialist agents that interpret the math |
 | **Dashboard** | `src/dashboard.py` | Streamlit UI for exploring data interactively |
 | **Pipeline** | `src/weekly_sync.py` | Orchestrates the weekly pipeline end-to-end |
+| **Email Reminder** | `src/send_export_reminder.py` | Sends a weekly reminder to export Garmin data |
 | **Email** | `src/email_notifier.py` | Sends HTML email with weekly recommendations |
 | **Schema** | `src/enhanced_schema.py` | Database table definitions |
 
 > [!TIP]
 > **For a deep dive into the math and agent design, see [Why the Math Is Mathing & Why Agents Aren't Hallucinating](why_the_math_mathing_and_why_agents_arent_hallucinating.md)** — a 500+ line technical document explaining every formula, every statistical test, and every anti-hallucination guardrail.
+
+### Weekly Reminder Setup
+To get a weekly email reminding you to click "Export":
+1. Add a job to Heroku Scheduler.
+2. Command: `python src/send_export_reminder.py`
+3. Frequency: Weekly (e.g., Sunday 08:00 AM).
 
 ## 💾 Database Structure
 
