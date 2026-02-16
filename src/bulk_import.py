@@ -230,17 +230,40 @@ def extract_zip_recursively(zip_path):
     log.info(f"Found Garmin data at: {connect_dir}")
     return connect_dir
 
+def get_latest_db_date():
+    """Get the latest date from production DB to determine incremental start."""
+    try:
+        conn = psycopg2.connect(os.getenv("POSTGRES_CONNECTION_STRING"))
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(date) FROM daily_metrics")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except Exception as e:
+        log.warning(f"Could not fetch latest DB date: {e}")
+    return None
+
 def run_ingest(connect_dir):
-    """Run the ingest pipeline."""
+    """Run the ingest pipeline with INCREMENTAL filtering."""
     log.info("Starting INGEST pipeline...")
     
+    # 1. Determine Start Date (Lazy Incremental)
+    latest_date = get_latest_db_date()
+    start_date = date(2020, 1, 1)  # Default
+    
+    if latest_date:
+        # Buffer of 14 days to catch updates/corrections
+        start_date = latest_date - timedelta(days=14)
+        log.info(f"🔄 INCREMENTAL MODE: Latest DB date is {latest_date}. Ingesting from {start_date}...")
+    else:
+        log.info("🆕 FULL IMPORT MODE: No existing data found. Ingesting from 2020-01-01.")
+
     # Monkeypatch config
     config.CONNECT_DIR = connect_dir
-    # Ensure DATE_FROM is set (default 2026-02-01)
-    # We can override if needed, but using default for now
     
     # Initialize DB (garmin schema)
-    # We'll try to run the schema.sql if it exists
     schema_path = PROJECT_ROOT / "mass_donwload_code_decoder" / "schema_garmin.sql"
     if schema_path.exists():
         log.info("Ensuring 'garmin' schema exists...")
@@ -253,50 +276,53 @@ def run_ingest(connect_dir):
             log.info("Schema init OK.")
         except Exception as e:
             conn.rollback()
-            log.warning(f"Schema init warning (might already exist): {e}")
+            log.warning(f"Schema init warning: {e}")
         finally:
             cur.close()
             conn.close()
             
     # Run ingestors
-    # We need to import ingest here to ensure it uses the monkeypatched config
     import ingest
+    # Filter by date!
+    ingest.DATE_FROM = start_date
+    config.DATE_FROM = start_date
     
-    # ingest.py uses a global connection pattern in main(), but we should use direct calls
     conn = db.get_connection()
+    conn.autocommit = True
     cur = conn.cursor()
     
     for fn in ingest.ALL_INGESTORS:
         try:
             fn(cur)
-            conn.commit()
         except Exception as e:
-            conn.rollback()
             log.error(f"Ingestor {fn.__name__} failed: {e}")
             
     cur.close()
     conn.close()
     log.info("Ingest complete.")
+    return start_date
 
-def run_merge():
+def run_merge(start_date=None):
     """Run the merge to production pipeline."""
     log.info("Starting MERGE pipeline...")
     import garmin_merge
     
-    # garmin_merge expects arguments usually, but defaults to full run
-    # We can call its main() or refactor. 
-    # Calling main() parses sys.argv. We should mock sys.argv or refactor.
-    # Refactoring `garmin_merge.py`'s main logic to a function `run_merge_routine` is best,
-    # but for now let's just use subprocess or update sys.argv safely.
-    
+    # Use subprocess to call proper args or mock sys.argv
+    args = ["garmin_merge.py"]
+    if start_date:
+        args.extend(["--since", str(start_date)])
+        
     old_argv = sys.argv
-    sys.argv = ["garmin_merge.py"] # No args = full merge
+    sys.argv = args
     try:
         garmin_merge.main()
     except SystemExit as e:
         if e.code != 0:
             log.error("Merge failed.")
             raise
+    except Exception as e:
+        log.error(f"Merge error: {e}")
+        raise
     finally:
         sys.argv = old_argv
         
@@ -354,10 +380,10 @@ def run_bulk_import(auto=False, zip_path=None):
         connect_dir = extract_zip_recursively(local_zip)
         
         # 5. Ingest
-        run_ingest(connect_dir)
+        start_date = run_ingest(connect_dir)
         
         # 6. Merge
-        run_merge()
+        run_merge(start_date)
         
         # 7. Cleanup DB
         cleanup_staging_db()
