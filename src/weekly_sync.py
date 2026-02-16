@@ -148,6 +148,10 @@ class WeeklySyncPipeline:
         longest = corr_result.get("longest")
         matrix_ctx = benchmarks.get(longest, "") if longest else ""
 
+        # run_weekly_summary handles:
+        #   - All 5 agents in sequence
+        #   - Past recommendation context injection
+        #   - Parsing + persisting new recommendations
         result = agents.run_weekly_summary(
             matrix_context=matrix_ctx,
             comparison_context=corr_result.get("comparison", ""),

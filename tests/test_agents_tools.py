@@ -132,3 +132,107 @@ class TestAnalyzePattern:
         with patch("enhanced_agents.pd.read_sql_query", return_value=df):
             result = analyze_pattern("stress_level", 30)
         assert "Not enough" in result
+
+
+# ─── get_past_recommendations ─────────────────────────────────
+
+
+def get_past_recommendations(weeks: int = 4) -> str:
+    return _agents_mod.get_past_recommendations.run(weeks=weeks)
+
+
+class TestGetPastRecommendations:
+    """Test the past recommendations retrieval tool."""
+
+    @patch("enhanced_agents.psycopg2")
+    def test_no_recommendations(self, mock_pg):
+        mock_conn = MagicMock()
+        mock_pg.connect.return_value = mock_conn
+
+        with patch("enhanced_agents.pd.read_sql_query", return_value=pd.DataFrame()):
+            result = get_past_recommendations(4)
+        assert "No past recommendations" in result or "first analysis" in result
+
+    @patch("enhanced_agents.psycopg2")
+    def test_returns_past_recs(self, mock_pg):
+        mock_conn = MagicMock()
+        mock_pg.connect.return_value = mock_conn
+
+        df = pd.DataFrame({
+            "week_date": ["2026-02-10"],
+            "agent_name": ["synthesizer"],
+            "recommendation": ["Increase sleep duration"],
+            "target_metric": ["sleep_score"],
+            "expected_direction": ["IMPROVE"],
+            "status": ["pending"],
+            "outcome_notes": [None],
+        })
+        with patch("enhanced_agents.pd.read_sql_query", return_value=df):
+            result = get_past_recommendations(4)
+        assert "Increase sleep duration" in result
+        assert "sleep_score" in result
+
+
+# ─── _parse_recommendations ──────────────────────────────────
+
+
+class TestParseRecommendations:
+    """Test the recommendation parser."""
+
+    def test_parses_structured_output(self):
+        from enhanced_agents import AdvancedHealthAgents
+        text = """
+        Here are your quick wins:
+
+        RECOMMENDATION: Aim for 7+ hours of sleep on training days
+        TARGET_METRIC: sleep_score
+        EXPECTED_DIRECTION: IMPROVE
+
+        RECOMMENDATION: Reduce evening screen time
+        TARGET_METRIC: deep_sleep_sec
+        EXPECTED_DIRECTION: IMPROVE
+        """
+        recs = AdvancedHealthAgents._parse_recommendations(text)
+        assert len(recs) == 2
+        assert recs[0]["recommendation"] == "Aim for 7+ hours of sleep on training days"
+        assert recs[0]["target_metric"] == "sleep_score"
+        assert recs[0]["expected_direction"] == "IMPROVE"
+        assert recs[1]["target_metric"] == "deep_sleep_sec"
+
+    def test_empty_output(self):
+        from enhanced_agents import AdvancedHealthAgents
+        recs = AdvancedHealthAgents._parse_recommendations("No structured recommendations here.")
+        assert recs == []
+
+
+# ─── save_recommendations_to_db ──────────────────────────────
+
+
+class TestSaveRecommendations:
+    """Test saving recommendations to DB."""
+
+    @patch("enhanced_agents.psycopg2")
+    def test_saves_to_db(self, mock_pg):
+        from enhanced_agents import save_recommendations_to_db
+        from datetime import date
+
+        mock_conn = MagicMock()
+        mock_pg.connect.return_value = mock_conn
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+
+        recs = [
+            {"recommendation": "Sleep more", "target_metric": "sleep_score",
+             "expected_direction": "IMPROVE"},
+        ]
+        save_recommendations_to_db(recs, week_date=date(2026, 2, 10))
+
+        # Should have called execute for CREATE TABLE + INSERT
+        assert mock_cur.execute.call_count >= 2
+
+    @patch("enhanced_agents.psycopg2")
+    def test_empty_list_does_nothing(self, mock_pg):
+        from enhanced_agents import save_recommendations_to_db
+        save_recommendations_to_db([])
+        mock_pg.connect.assert_not_called()
+

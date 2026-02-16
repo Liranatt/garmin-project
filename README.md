@@ -39,12 +39,15 @@ The system runs as a weekly automated pipeline:
 1.  **Data Collection** — Fetches raw data from the Garmin API (via `garth`) and upserts it into PostgreSQL. Handles API instability with retry logic.
 
 2.  **Correlation Engine** — Before any AI touches the data, this engine calculates:
-    * **Pearson Correlations** — linear relationships between metrics
-    * **AR(1) Models** — "momentum" / persistence of specific metrics
+    * **Pearson Correlations** — linear relationships between metrics (same-day + lag-1, p < 0.05)
+    * **AR(1) Models** — "momentum" / persistence of specific metrics with ADF stationarity checks
     * **Markov Transitions** — probability of state changes (e.g., "Poor Sleep" → "High Recovery")
     * **Conditioned AR(1)** — which variable *combinations* best predict next-day outcomes
+    * **Percentile-Based Anomaly Detection** — distribution-agnostic alerting (5th/95th percentile)
+    * **Rolling Correlation Stability** — 30-day rolling window to flag non-stationary relationships
+    * **Multi-Lag Carryover** — lag-2 and lag-3 analysis for multi-day physiological effects
 
-3.  **AI Agents** — A team of 5 specialized agents (CrewAI + Gemini 2.5 Flash). They receive the *statistical summary*, not raw numbers — ensuring insights are grounded in math, not guesses.
+3.  **AI Agents** — A team of 5 specialized agents (CrewAI + Gemini 2.5 Flash) with **long-term memory**. Agents receive the *statistical summary*, not raw numbers — and the Synthesizer reviews past recommendations to track what worked.
 
 4.  **Dashboard** — Streamlit interface to visualize trends, explore data, and chat with the agents using natural language.
 
@@ -92,7 +95,7 @@ Standard `.shift(1)` is dangerous with wearable data — if I skip wearing the w
 **Solution:** Strict date enforcement (`.asfreq('D')`) inserts `NaN` for missing days, so models only analyze true consecutive sequences.
 
 ### Preventing AI Hallucinations
-LLMs are confident but bad at math. The AI never sees raw CSVs — only a structured "Context Window" generated *after* statistical significance is proven ($p < 0.05$).
+LLMs are confident but bad at math. The AI never sees raw CSVs — only a structured "Context Window" generated *after* statistical significance is proven ($p < 0.05$). Anomaly detection uses percentiles (5th/95th) instead of z-scores — works equally well for normal and skewed metrics like HRV.
 
 ### Signal vs. Noise
 Wearable data is noisy. Adaptive Kernel Smoothing on Markov transition matrices prevents a single outlier from skewing the probability model.
@@ -127,14 +130,14 @@ The system runs 5 specialized agents in sequence:
 | **Health Pattern Analyst** | Finds day-by-day patterns and trends — verifies correlations against actual data, flags outliers |
 | **Performance & Recovery** | Week-over-week comparison + bounce-back analysis after hard training days |
 | **Sleep & Lifestyle** | Sleep architecture deep-dive + connects specific activities to next-day outcomes |
-| **Synthesizer** | Fact-checks all previous agents, identifies the #1 bottleneck, and gives evidence-based quick wins |
+| **Synthesizer** | Fact-checks all previous agents, reviews past recommendations via long-term memory, identifies the #1 bottleneck, and gives evidence-based quick wins |
 
 ## Known Limitations
 
 * **Sample size:** Built for individual use (n=1). Patterns may not generalize to other users.
 * **Data sparsity:** Markov transitions require ≥100 days for stability. With <30 days, results are marked as preliminary. Plews et al. (2014) recommend a minimum of 3–5 HRV recordings per week for a valid weekly profile.
 * **Correlation ≠ Causation:** Statistical relationships don't prove cause-effect. The system flags this explicitly.
-* **No clinical validation:** Statistical methods are unit-tested for mathematical correctness (49 tests), but no prospective validation has been performed against health outcomes. This is an exploratory tool, not a validated clinical instrument.
+* **No clinical validation:** Statistical methods are unit-tested for mathematical correctness (60 tests across 3 test suites), but no prospective validation has been performed against health outcomes. This is an exploratory tool, not a validated clinical instrument.
 * **User-reported data:** Wellness and nutrition entries are self-reported — subject to recall bias and inconsistent logging.
 * **AI interpretation boundaries:** Commercial wearable platforms (Garmin, Whoop, Oura) intentionally limit AI-driven health feedback due to regulatory classification as Software as a Medical Device (SaMD) and liability concerns. This project operates outside that scope as a personal, non-commercial, educational tool.
 

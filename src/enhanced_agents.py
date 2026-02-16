@@ -8,8 +8,10 @@ from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 import pandas as pd
 import psycopg2
+import json
 import os
 import logging
+from datetime import date, timedelta
 from typing import Any, List
 from dotenv import load_dotenv
 
@@ -160,6 +162,134 @@ def analyze_pattern(metric: str, days: int = 30) -> str:
         return f"Error: {e}"
 
 
+@tool("Get Past Recommendations")
+def get_past_recommendations(weeks: int = 4) -> str:
+    """
+    Retrieve past AI recommendations from the last N weeks.
+    Shows what was recommended, the target metric, and current status.
+    Use this to review what was suggested before and whether it worked.
+    """
+    try:
+        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        query = """
+            SELECT week_date, agent_name, recommendation,
+                   target_metric, expected_direction, status, outcome_notes
+            FROM agent_recommendations
+            WHERE week_date >= CURRENT_DATE - INTERVAL '%s weeks'
+            ORDER BY week_date DESC, id
+        """
+        # Use parameterized interval safely
+        df = pd.read_sql_query(
+            "SELECT week_date, agent_name, recommendation, "
+            "target_metric, expected_direction, status, outcome_notes "
+            "FROM agent_recommendations "
+            "WHERE week_date >= CURRENT_DATE - INTERVAL '" + str(int(weeks)) + " weeks' "
+            "ORDER BY week_date DESC, id",
+            conn
+        )
+        conn.close()
+        if df.empty:
+            return "No past recommendations found. This is the first analysis."
+        return df.to_string(index=False)
+    except Exception as e:
+        return f"No past recommendations available: {e}"
+
+
+def save_recommendations_to_db(recommendations: list, week_date=None):
+    """
+    Save parsed recommendations to agent_recommendations table.
+    Called by the pipeline after Synthesizer output is parsed.
+
+    Parameters
+    ----------
+    recommendations : list of dict
+        Each dict has keys: recommendation, target_metric,
+        expected_direction, agent_name (default: 'synthesizer')
+    week_date : date, optional
+        Defaults to start of current week.
+    """
+    if not recommendations:
+        return
+    if week_date is None:
+        today = date.today()
+        week_date = today - timedelta(days=today.weekday())
+
+    try:
+        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        # Ensure table exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS agent_recommendations (
+                id              SERIAL PRIMARY KEY,
+                week_date       DATE NOT NULL,
+                agent_name      TEXT NOT NULL,
+                recommendation  TEXT NOT NULL,
+                target_metric   TEXT,
+                expected_direction TEXT,
+                status          TEXT DEFAULT 'pending',
+                outcome_notes   TEXT,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        for rec in recommendations:
+            cur.execute(
+                "INSERT INTO agent_recommendations "
+                "(week_date, agent_name, recommendation, target_metric, expected_direction) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (
+                    week_date,
+                    rec.get('agent_name', 'synthesizer'),
+                    rec['recommendation'],
+                    rec.get('target_metric', ''),
+                    rec.get('expected_direction', ''),
+                ),
+            )
+
+        cur.close()
+        conn.close()
+        log.info("Saved %d recommendations to agent_recommendations", len(recommendations))
+    except Exception as e:
+        log.warning("Failed to save recommendations: %s", e)
+
+
+def load_past_recommendations_context(weeks: int = 4) -> str:
+    """
+    Load past recommendations as a text block for agent context injection.
+    Returns a formatted string or empty string if no recommendations.
+    """
+    try:
+        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        df = pd.read_sql_query(
+            "SELECT week_date, recommendation, target_metric, "
+            "expected_direction, status, outcome_notes "
+            "FROM agent_recommendations "
+            "WHERE week_date >= CURRENT_DATE - INTERVAL '" + str(int(weeks)) + " weeks' "
+            "ORDER BY week_date DESC, id",
+            conn
+        )
+        conn.close()
+        if df.empty:
+            return ""
+        lines = ["\n\nPAST RECOMMENDATIONS (last {} weeks):".format(weeks)]
+        for _, row in df.iterrows():
+            status = row.get('status', 'pending')
+            outcome = row.get('outcome_notes', '') or ''
+            lines.append(
+                f"  [{row['week_date']}] {row['recommendation']} "
+                f"(target: {row['target_metric']}, expected: {row['expected_direction']}, "
+                f"status: {status})"
+            )
+            if outcome:
+                lines.append(f"    → Outcome: {outcome}")
+        lines.append("")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 class AdvancedHealthAgents:
     """
     Enhanced AI agents that provide insights beyond Garmin Connect.
@@ -171,7 +301,8 @@ class AdvancedHealthAgents:
             run_sql_query,
             calculate_correlation,
             find_best_days,
-            analyze_pattern
+            analyze_pattern,
+            get_past_recommendations
         ]
         
         # ── 5 Consolidated Agents (merged from original 9 for cost efficiency) ──
@@ -325,7 +456,20 @@ class AdvancedHealthAgents:
             - For each quick win, state the SPECIFIC metric you expect to
               improve and by HOW MUCH based on the data.
             - Call out what's ALREADY going well. Not everything needs fixing.
-            - If the biggest issue is data quality, say that first.""",
+            - If the biggest issue is data quality, say that first.
+
+            LONG-TERM MEMORY RULES:
+            - ALWAYS check past recommendations using the 'Get Past Recommendations' tool.
+            - If a recommendation from a previous week was followed and the target
+              metric improved, REINFORCE it ("keep doing X — it's working").
+            - If a recommendation was followed but the metric didn't improve,
+              REVISE it with a new approach or acknowledge it may take more time.
+            - If a recommendation was ignored, decide if it's still relevant.
+            - Reference specific past recommendations by date and content.
+            - Structure each new recommendation as:
+              RECOMMENDATION: [what to do]
+              TARGET_METRIC: [which metric should change]
+              EXPECTED_DIRECTION: [IMPROVE/DECLINE/STABLE]""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
@@ -425,6 +569,10 @@ class AdvancedHealthAgents:
 
         return tasks
 
+    def _get_past_recs_context(self) -> str:
+        """Load past recommendations for injection into agent task descriptions."""
+        return load_past_recommendations_context(weeks=4)
+
     def create_weekly_summary_tasks(self, matrix_context: str = "",
                                      comparison_context: str = "") -> List[Task]:
         """Create tasks for weekly summary report.
@@ -447,9 +595,16 @@ class AdvancedHealthAgents:
 
         comparison_block = ""
         if comparison_context:
+            # Extract 'same_week_last_year' if present
+            import re
+            swly_block = ""
+            match = re.search(r"\[SAME WEEK LAST YEAR\](.*?)(\n\[|$)", comparison_context, re.DOTALL)
+            if match:
+                swly_block = f"\n\nSAME WEEK LAST YEAR BENCHMARK:\n{match.group(1).strip()}\n"
             comparison_block = (
                 "\n\nWEEK-OVER-WEEK COMPARISON DATA:\n"
                 f"{comparison_context}\n"
+                f"{swly_block}"
             )
 
         # ג”€ג”€ Shared analytical rules that go into every task ג”€ג”€
@@ -657,22 +812,35 @@ class AdvancedHealthAgents:
                 description=f"""
                 Synthesize all previous findings into #1 bottleneck + top 3 quick wins.
 
+                STEP 0 — MEMORY CHECK:
+                Use the 'Get Past Recommendations' tool to retrieve past recommendations.
+                Review what was recommended before and what happened.
+                {self._get_past_recs_context()}
+
                 1. FACT-CHECK: Did previous agents flag outliers? Note sample sizes?
                    Conflate metrics? Correct any errors.
-                2. BOTTLENECK: Top 3 candidates with supporting data.
+                2. PAST RECOMMENDATIONS FOLLOW-UP:
+                   - For each past recommendation, assess: was it followed? Did the
+                     target metric change in the expected direction?
+                   - Explicitly state: "Last week I recommended X. Result: Y."
+                3. BOTTLENECK: Top 3 candidates with supporting data.
                    Assess evidence strength (n>=20 consistent vs n<20 outlier-driven).
                    Pick the one with strongest evidence (or say "insufficient data").
-                3. QUICK WINS — each must have:
+                4. QUICK WINS — each must have:
                    - Specific metric expected to improve
                    - Evidence (correlation, day-pair, KL shift)
                    - Confidence level (high/medium/low)
                    - How to verify next week
-                4. WHAT'S WORKING: 2-3 positive things to continue
-                5. HONEST LIMITATIONS: what can't we determine yet?
+                   Format each as:
+                   RECOMMENDATION: [what to do]
+                   TARGET_METRIC: [metric name]
+                   EXPECTED_DIRECTION: [IMPROVE/DECLINE/STABLE]
+                5. WHAT'S WORKING: 2-3 positive things to continue
+                6. HONEST LIMITATIONS: what can't we determine yet?
                 {ctx}
                 """,
                 agent=self.synthesizer,
-                expected_output="Fact-checked synthesis with bottleneck + quick wins + limitations"
+                expected_output="Fact-checked synthesis with past rec follow-up + bottleneck + structured quick wins + limitations"
             ),
         ]
 
@@ -718,39 +886,6 @@ class AdvancedHealthAgents:
         log.info("="*60 + "\n")
         
         tasks = self.create_deep_analysis_tasks(analysis_period)
-        
-        crew = Crew(
-            agents=[
-                self.health_pattern_analyst,
-                self.performance_recovery,
-                self.sleep_lifestyle,
-                self.synthesizer,
-            ],
-            tasks=tasks,
-            process=Process.sequential,
-            verbose=True
-        )
-        
-        result = crew.kickoff()
-        
-        log.info("\n" + "="*60)
-        log.info("ג… ANALYSIS COMPLETE")
-        log.info("="*60 + "\n")
-        
-        return result
-    
-    def run_weekly_summary(self, matrix_context: str = "",
-                            comparison_context: str = "") -> str:
-        """Generate weekly summary report using 8 agents.
-        Returns the COMBINED output from all 8 agents, not just the last one.
-        """
-
-        log.info("\n  Generating Weekly Summary (5 agents)ג€¦\n")
-
-        tasks = self.create_weekly_summary_tasks(
-            matrix_context=matrix_context,
-            comparison_context=comparison_context,
-        )
 
         agent_labels = [
             "STATISTICAL INTERPRETATION (Interpreter)",
@@ -804,3 +939,99 @@ class AdvancedHealthAgents:
         )
         
         return crew.kickoff()
+
+    def run_weekly_summary(self, matrix_context: str = "",
+                           comparison_context: str = "") -> str:
+        """Run the 5-agent weekly summary pipeline.
+
+        Returns the combined text output from all agents.
+        Also parses Synthesizer recommendations for DB persistence.
+        """
+        log.info("\n" + "="*60)
+        log.info("  RUNNING WEEKLY SUMMARY (5 agents)")
+        log.info("="*60 + "\n")
+
+        tasks = self.create_weekly_summary_tasks(
+            matrix_context=matrix_context,
+            comparison_context=comparison_context,
+        )
+
+        agent_labels = [
+            "STATISTICAL INTERPRETATION (Interpreter)",
+            "PATTERNS & TRENDS (Pattern Analyst)",
+            "PERFORMANCE & RECOVERY (Performance/Recovery)",
+            "SLEEP & LIFESTYLE (Sleep/Lifestyle)",
+            "BOTTLENECK & QUICK WINS (Synthesizer)",
+        ]
+
+        crew = Crew(
+            agents=[
+                self.statistical_interpreter,
+                self.health_pattern_analyst,
+                self.performance_recovery,
+                self.sleep_lifestyle,
+                self.synthesizer,
+            ],
+            tasks=tasks,
+            process=Process.sequential,
+            verbose=True,
+        )
+
+        result = crew.kickoff()
+
+        # Combine ALL agent outputs
+        sections = []
+        synthesizer_output = ""
+        try:
+            for label, task_out in zip(agent_labels, result.tasks_output):
+                raw = getattr(task_out, "raw", str(task_out))
+                sections.append(f"{'='*60}\n  {label}\n{'='*60}\n\n{raw}")
+                if "Synthesizer" in label:
+                    synthesizer_output = raw
+        except Exception:
+            return str(result)
+
+        # Parse and save structured recommendations from Synthesizer
+        recs = self._parse_recommendations(synthesizer_output)
+        if recs:
+            save_recommendations_to_db(recs)
+            log.info("Saved %d recommendations to long-term memory", len(recs))
+
+        combined = "\n\n".join(sections)
+        log.info(f"\n  Combined output: {len(combined)} chars from {len(sections)} agents")
+        return combined
+
+    @staticmethod
+    def _parse_recommendations(synthesizer_text: str) -> list:
+        """Parse structured recommendations from Synthesizer output.
+
+        Looks for blocks like:
+            RECOMMENDATION: [text]
+            TARGET_METRIC: [metric]
+            EXPECTED_DIRECTION: [IMPROVE/DECLINE/STABLE]
+        """
+        recs = []
+        current_rec = None
+        for line in synthesizer_text.splitlines():
+            stripped = line.strip()
+            upper = stripped.upper()
+            if upper.startswith("RECOMMENDATION:"):
+                # Save previous if exists
+                if current_rec and current_rec.get("recommendation"):
+                    recs.append(current_rec)
+                current_rec = {
+                    "recommendation": stripped.split(":", 1)[1].strip(),
+                    "target_metric": "",
+                    "expected_direction": "",
+                    "agent_name": "synthesizer",
+                }
+            elif upper.startswith("TARGET_METRIC:") and current_rec is not None:
+                current_rec["target_metric"] = stripped.split(":", 1)[1].strip()
+            elif upper.startswith("EXPECTED_DIRECTION:") and current_rec is not None:
+                val = stripped.split(":", 1)[1].strip().upper()
+                if val in ("IMPROVE", "DECLINE", "STABLE"):
+                    current_rec["expected_direction"] = val
+        # Don't forget the last one
+        if current_rec and current_rec.get("recommendation"):
+            recs.append(current_rec)
+        return recs

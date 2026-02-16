@@ -292,8 +292,8 @@ class CorrelationEngine:
         log.info(
             "\n   ┌─── COMPUTATION DIGEST (%s, %d days) ───\n"
             "   │ Layer 0  Load & Clean    : %d metrics auto-discovered\n"
-            "   │ Layer 1a Same-day Pearson: %d significant pairs (p<0.15)\n"
-            "   │ Layer 1b Lag-1 Pearson   : %d next-day predictors (p<0.15)\n"
+            "   │ Layer 1a Same-day Pearson: %d significant pairs (p<0.05)\n"
+            "   │ Layer 1b Lag-1 Pearson   : %d next-day predictors (p<0.05)\n"
             "   │ Layer 2a Normality       : %d normal, %d non-normal\n"
             "   │ Layer 2b AR(1)           : %d persistence models\n"
             "   │ Layer 2c Anomalies       : %d recent anomalies (|z|>1.5)\n"

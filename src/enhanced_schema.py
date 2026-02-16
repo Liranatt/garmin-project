@@ -10,6 +10,7 @@ Tables added here:
   - personal_records      (PRs)
   - goals                 (custom goals)
   - weekly_summaries      (cached AI insights)
+  - agent_recommendations (long-term agent memory / feedback loop)
 
 Views:
   - weekly_comparison     (week-over-week analysis)
@@ -208,6 +209,21 @@ SELECT
 FROM daily_metrics
 WHERE date >= CURRENT_DATE - INTERVAL '90 days'
 ORDER BY date;
+
+-- Agent long-term memory: track recommendations and outcomes
+CREATE TABLE IF NOT EXISTS agent_recommendations (
+    id              SERIAL PRIMARY KEY,
+    week_date       DATE NOT NULL,
+    agent_name      TEXT NOT NULL,
+    recommendation  TEXT NOT NULL,
+    target_metric   TEXT,
+    expected_direction TEXT,           -- IMPROVE / DECLINE / STABLE
+    status          TEXT DEFAULT 'pending',  -- pending / followed / ignored / superseded
+    outcome_notes   TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_rec_week ON agent_recommendations(week_date DESC);
 """
 
 def upgrade_database(conn_str: str = None):
