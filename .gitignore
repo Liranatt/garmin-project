@@ -84,3 +84,9 @@ agent_output*.txt
 # Database dumps
 *.dump
 *.sql.gz
+
+# Data files
+*.json
+*.fit
+*.zip
+*.csv
