@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 import psycopg2
 from scipy import stats as sp_stats
+from statsmodels.tsa.stattools import adfuller
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -90,11 +91,23 @@ KEY_RANGE_METRICS = [
     "daily_load_acute", "daily_load_chronic",
     "race_time_5k", "race_time_5k_delta",
     "heat_acclimation_pct",
+    # Derived metrics (Plews 2012, Esco 2025)
+    "ln_hrv", "hrv_weekly_mean", "hrv_weekly_cv",
+    # User-reported (wellness_log)
+    "caffeine_intake", "alcohol_intake", "energy_level",
+    "overall_stress_level", "workout_feeling", "muscle_soreness",
+    # Nutrition (nutrition_log aggregated daily)
+    "total_calories", "total_protein", "total_carbs", "total_fat",
 ]
 
 # Markov discretisation
-N_BINS = 5
-BIN_LABELS = ["VERY_LOW", "LOW", "MED", "HIGH", "VERY_HIGH"]
+N_BINS = 3
+BIN_LABELS = ["LOW", "MED", "HIGH"]
+
+# ACWR evidence-based thresholds (Gabbett 2016, BJSM, 2597 citations)
+# Used instead of percentile bins for the acwr metric specifically.
+ACWR_EDGES = [0, 0.8, 1.3, 1.5, 999]
+ACWR_LABELS = ["UNDERTRAINED", "SWEET_SPOT", "HIGH_RISK", "DANGER"]
 
 # Smoothing alpha for Markov transitions (must be same for marginal & conditional)
 # Now adaptive: α = max(SMOOTH_ALPHA_MIN, SMOOTH_ALPHA_BASE / sqrt(n_transitions))
@@ -106,8 +119,7 @@ SMOOTH_ALPHA_MIN  = 0.02   # floor — always keep a tiny uniform mix
 SMOOTH_ALPHA_MAX  = 0.25   # ceiling — cap smoothing for very small n
 
 # Minimum transitions per conditioning level for KL to be computed
-# Raised from 5→8 to compensate for 5-bin (quintile) sparsity
-MIN_TRANSITIONS_KL = 8
+MIN_TRANSITIONS_KL = 5
 
 
 def _adaptive_alpha(n_transitions: int) -> float:
@@ -259,11 +271,15 @@ class CorrelationEngine:
         anomalies = self._layer2c_anomalies(df, data, metrics)
         cond_ar1_results = self._layer2d_conditioned_ar1(data, metrics, normality)
         markov_results = self._layer2e_markov(data, metrics, normality)
+        rolling_corr_results = self._layer2f_rolling_correlation(data, sig_pairs)
+        multi_lag_results = self._multi_lag_carryover(data, metrics)
 
         summary = self._layer3_summary(
             df, n_days, metrics, sig_pairs, lag1_results,
             normality, ar1_results, anomalies,
-            cond_ar1_results, markov_results, training_for_summary,
+            cond_ar1_results, markov_results,
+            rolling_corr_results, multi_lag_results,
+            training_for_summary,
         )
 
         # ── Per-window computation digest ──
@@ -655,6 +671,32 @@ class CorrelationEngine:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY date"
         df = pd.read_sql_query(query, conn, params=params or None)
+
+        # Also load wellness_log and nutrition_log for user-reported data
+        try:
+            df_wellness = pd.read_sql_query(
+                "SELECT date, caffeine_intake, alcohol_intake, "
+                "illness_severity, injury_severity, overall_stress_level, "
+                "energy_level, workout_feeling, muscle_soreness "
+                "FROM wellness_log ORDER BY date", conn
+            )
+        except Exception:
+            df_wellness = pd.DataFrame()
+
+        try:
+            df_nutrition = pd.read_sql_query(
+                "SELECT date, "
+                "SUM(calories) as total_calories, "
+                "SUM(protein_grams) as total_protein, "
+                "SUM(carbs_grams) as total_carbs, "
+                "SUM(fat_grams) as total_fat, "
+                "SUM(fiber_grams) as total_fiber, "
+                "SUM(water_ml) as total_water_ml "
+                "FROM nutrition_log GROUP BY date ORDER BY date", conn
+            )
+        except Exception:
+            df_nutrition = pd.DataFrame()
+
         conn.close()
 
         if df.empty:
@@ -671,6 +713,19 @@ class CorrelationEngine:
         if n_filled > 0:
             log.info(f"   Inserted {n_filled} gap-fill rows for date continuity")
 
+        # Merge wellness_log and nutrition_log (user-reported subjective data)
+        if not df_wellness.empty:
+            df_wellness["date"] = pd.to_datetime(df_wellness["date"])
+            df = df.merge(df_wellness, on="date", how="left")
+            n_wellness = df_wellness.shape[0]
+            log.info(f"   Merged {n_wellness} wellness_log entries")
+
+        if not df_nutrition.empty:
+            df_nutrition["date"] = pd.to_datetime(df_nutrition["date"])
+            df = df.merge(df_nutrition, on="date", how="left")
+            n_nutrition = df_nutrition.shape[0]
+            log.info(f"   Merged {n_nutrition} nutrition_log entries")
+
         # Fix 1: HRV sentinel 511 → NaN
         if "tr_hrv_weekly_avg" in df.columns:
             n_511 = (df["tr_hrv_weekly_avg"] == 511).sum()
@@ -686,6 +741,25 @@ class CorrelationEngine:
         # Fix 3: Rename tr_ abbreviations
         actual_renames = {k: v for k, v in RENAME_MAP.items() if k in df.columns}
         df.rename(columns=actual_renames, inplace=True)
+
+        # Fix 4: Log-transform HRV (Esco 2025, Plews 2012)
+        # RMSSD is right-skewed; lnRMSSD is standard in the literature.
+        # Pearson assumes normality — use lnRMSSD instead of raw HRV.
+        hrv_col = "training_hrv_weekly_avg" if "training_hrv_weekly_avg" in df.columns else "hrv_last_night"
+        if hrv_col in df.columns:
+            df["ln_hrv"] = np.log(df[hrv_col].clip(lower=1))
+            log.info("   Derived: ln_hrv (log-transformed HRV)")
+
+        # Fix 5: Weekly HRV Mean + CV (Plews 2012, Esco 2025)
+        # The coefficient of variation of HRV over a rolling 7-day window
+        # is a stronger marker of recovery status than the mean alone.
+        if "hrv_last_night" in df.columns:
+            hrv_series = df["hrv_last_night"]
+            rolling_mean = hrv_series.rolling(7, min_periods=3).mean()
+            rolling_std = hrv_series.rolling(7, min_periods=3).std()
+            df["hrv_weekly_mean"] = rolling_mean
+            df["hrv_weekly_cv"] = (rolling_std / rolling_mean.clip(lower=1)) * 100
+            log.info("   Derived: hrv_weekly_mean, hrv_weekly_cv (7-day rolling)")
 
         # Auto-discover numeric columns with ≥5 non-null values
         candidate_cols = [
@@ -738,7 +812,7 @@ class CorrelationEngine:
                     continue
                 r = R0.loc[ci, cj]
                 p = P0.loc[ci, cj]
-                if not np.isnan(r) and p < 0.15:
+                if not np.isnan(r) and p < 0.05 and abs(r) > 0.3:
                     sig_pairs.append((ci, cj, r, p))
         sig_pairs.sort(key=lambda x: abs(x[2]), reverse=True)
 
@@ -759,7 +833,7 @@ class CorrelationEngine:
                 if np.std(valid["pred"]) < 1e-10 or np.std(valid["tgt"]) < 1e-10:
                     continue
                 r, p = sp_stats.pearsonr(valid["pred"], valid["tgt"])
-                if p < 0.15:
+                if p < 0.05 and abs(r) > 0.3:
                     lag1_results.append((predictor, target, r, p, n))
         lag1_results.sort(key=lambda x: abs(x[2]), reverse=True)
 
@@ -825,8 +899,18 @@ class CorrelationEngine:
             x = vals.values[:-1]
             if np.std(x) < 1e-10:
                 continue
+
+            # ADF stationarity test (Daza 2018)
+            is_stationary = True
+            try:
+                if len(vals) >= 8:
+                    adf_stat, adf_p, *_ = adfuller(vals.values, maxlag=1)
+                    is_stationary = adf_p < 0.05
+            except Exception:
+                pass  # fallback: assume stationary
+
             slope, intercept, r, p, se = sp_stats.linregress(x, y)
-            results.append((m, slope, r**2, p, len(y)))
+            results.append((m, slope, r**2, p, len(y), is_stationary))
         results.sort(key=lambda x: x[2], reverse=True)
         log.info(f"   ✓ {len(results)} AR(1) models")
         return results
@@ -835,16 +919,16 @@ class CorrelationEngine:
 
     def _layer2c_anomalies(self, df: pd.DataFrame, data: pd.DataFrame,
                            metrics: List[str]) -> List[Tuple]:
-        """Detect recent statistical anomalies via z-score.
+        """Detect recent statistical anomalies via percentile thresholds.
 
-        For each metric computes:
+        For each metric computes the 5th and 95th percentiles over the
+        full window.  Flags the 3 most recent values that fall outside
+        these bounds as anomalies, labelled HIGH (> p95) or LOW (< p5).
 
-            z = (x − μ) / σ
+        Also reports the z-score for context:  z = (x − μ) / σ
 
-        where μ and σ are the full-window mean and std dev.
-        Flags the 3 most recent values where |z| > 1.5 as anomalies,
-        labelled HIGH (z > 0) or LOW (z < 0).  The 1.5σ threshold
-        captures the outer ~13 % of a normal distribution.
+        Using percentiles instead of z-scores is distribution-agnostic
+        — works equally well for normal and skewed metrics (e.g. HRV).
         """
         anomalies = []
         for m in metrics:
@@ -854,12 +938,15 @@ class CorrelationEngine:
             mu, sd = vals.mean(), vals.std()
             if sd < 1e-10:
                 continue
+            p5 = np.percentile(vals, 5)
+            p95 = np.percentile(vals, 95)
             recent = df[["date", m]].dropna().tail(3)
             for _, row in recent.iterrows():
-                z = (row[m] - mu) / sd
-                if abs(z) > 1.5:
-                    direction = "HIGH" if z > 0 else "LOW"
-                    anomalies.append((str(row["date"]), m, row[m], z, direction))
+                val = row[m]
+                if val < p5 or val > p95:
+                    z = (val - mu) / sd
+                    direction = "HIGH" if val > p95 else "LOW"
+                    anomalies.append((str(row["date"]), m, val, z, direction))
         return anomalies
 
     # ─── LAYER 2d: Conditioned AR(1) ─────────────────────────
@@ -993,9 +1080,11 @@ class CorrelationEngine:
 
         For each target metric:
 
-        1. **Discretization** — values are binned into N₅ = 5 quintile
-           states (VERY_LOW … VERY_HIGH) using percentile edges
-           [0, 20, 40, 60, 80, 100].
+        1. **Discretization** — values are binned into N_BINS = 3 tertile
+           states (LOW / MED / HIGH) using percentile edges driven by
+           N_BINS.  Exception: the `acwr` metric uses evidence-based
+           thresholds from Gabbett (2016, BJSM): <0.8 = UNDERTRAINED,
+           0.8-1.3 = SWEET_SPOT, 1.3-1.5 = HIGH_RISK, >1.5 = DANGER.
 
         2. **Marginal transition matrix** T[i,j] = P(state_j | state_i).
            Only transitions between truly consecutive days are counted
@@ -1045,10 +1134,16 @@ class CorrelationEngine:
             if len(vals) < 6:
                 continue
 
-            # Discretize into quintile bins (5 levels for higher resolution)
-            edges = np.percentile(vals, [0, 20, 40, 60, 80, 100])
-            edges[0] -= 1
-            edges[-1] += 1
+            # Use ACWR evidence-based bins (Gabbett 2016) for acwr metric,
+            # otherwise use N_BINS-driven percentile bins
+            if target == "acwr":
+                edges = np.array(ACWR_EDGES, dtype=np.float64)
+                actual_labels = ACWR_LABELS
+            else:
+                edges = np.percentile(vals, np.linspace(0, 100, N_BINS + 1))
+                edges[0] -= 1
+                edges[-1] += 1
+                actual_labels = BIN_LABELS
             edges = np.unique(edges)
             actual_bins = len(edges) - 1
             if actual_bins < 2:
@@ -1159,6 +1254,7 @@ class CorrelationEngine:
             results.append({
                 "target": target,
                 "bins": actual_bins,
+                "labels": actual_labels[:actual_bins],
                 "edges": edges,
                 "marginal": T_marginal_norm,
                 "stationary": stationary,
@@ -1174,11 +1270,111 @@ class CorrelationEngine:
         log.info(f"   ✓ {len(results)} Markov models")
         return results
 
+    # ─── Multi-Lag Carryover Detection (Daza 2018) ────────────
+
+    def _multi_lag_carryover(self, data: pd.DataFrame,
+                              metrics: List[str]) -> List[Tuple]:
+        """Check lag-2 and lag-3 correlations for KEY_TARGETS.
+
+        If a predictor→target relationship is still significant at
+        lag-2 or lag-3 days, it indicates a multi-day carryover effect
+        (e.g., a hard workout affects HRV for 2-3 days, not just 1).
+        Based on Daza (2018) — carryover effects in N-of-1 designs.
+
+        Only checks KEY_TARGETS to avoid combinatorial explosion.
+        """
+        log.info("   Multi-lag carryover detection…")
+        results = []
+        targets_actual = [
+            RENAME_MAP.get(t, t) for t in KEY_TARGETS
+            if RENAME_MAP.get(t, t) in metrics
+        ]
+
+        for lag in [2, 3]:
+            lagged = data.shift(lag)
+            for predictor in metrics:
+                for target in targets_actual:
+                    if predictor == target:
+                        continue
+                    valid = pd.DataFrame({
+                        "pred": lagged[predictor], "tgt": data[target]
+                    }).dropna()
+                    n = len(valid)
+                    if n < 8:
+                        continue
+                    if np.std(valid["pred"]) < 1e-10 or np.std(valid["tgt"]) < 1e-10:
+                        continue
+                    r, p = sp_stats.pearsonr(valid["pred"], valid["tgt"])
+                    if p < 0.05 and abs(r) > 0.3:
+                        results.append((predictor, target, lag, r, p, n))
+
+        results.sort(key=lambda x: abs(x[3]), reverse=True)
+        log.info(f"   ✓ {len(results)} multi-lag carryover pairs")
+        return results
+
+    # ─── LAYER 2f: Rolling Correlation Stationarity ───────────
+
+    def _layer2f_rolling_correlation(self, data: pd.DataFrame,
+                                      sig_pairs: List[Tuple]) -> List[Dict]:
+        """Check whether top correlations are stable over time.
+
+        For each of the top-10 significant same-day pairs, compute a
+        rolling 30-day Pearson r.  High variance of rolling-r means the
+        relationship is non-stationary (unstable) — possibly driven by
+        a confound or a phase-shift in the user's routine.
+
+        Returns list of dicts with:
+          - pair: (metric_a, metric_b)
+          - mean_r: mean of rolling-r values
+          - std_r: std of rolling-r values (instability indicator)
+          - stability: "STABLE" (std < 0.15), "MODERATE" (std < 0.25),
+                       or "UNSTABLE" (std >= 0.25)
+        """
+        log.info("   Layer 2f: rolling correlation stationarity…")
+        results = []
+        window = 30
+
+        for a, b, r_overall, p in sig_pairs[:10]:
+            sub = data[[a, b]].dropna()
+            if len(sub) < window + 5:
+                continue
+            rolling_r = []
+            for start in range(len(sub) - window + 1):
+                chunk = sub.iloc[start:start + window]
+                if chunk[a].std() < 1e-10 or chunk[b].std() < 1e-10:
+                    continue
+                r_win, _ = sp_stats.pearsonr(chunk[a], chunk[b])
+                rolling_r.append(r_win)
+
+            if len(rolling_r) < 3:
+                continue
+            arr = np.array(rolling_r)
+            std_r = float(np.std(arr))
+            mean_r = float(np.mean(arr))
+
+            if std_r < 0.15:
+                stability = "STABLE"
+            elif std_r < 0.25:
+                stability = "MODERATE"
+            else:
+                stability = "UNSTABLE"
+
+            results.append({
+                "pair": (a, b),
+                "mean_r": mean_r,
+                "std_r": std_r,
+                "stability": stability,
+            })
+
+        log.info(f"   ✓ {len(results)} rolling correlation checks")
+        return results
+
     # ─── LAYER 3: Agent Summary ───────────────────────────────
 
     def _layer3_summary(self, df, n_days, metrics, sig_pairs, lag1_results,
                         normality, ar1_results, anomalies,
                         cond_ar1_results, markov_results,
+                        rolling_corr_results, multi_lag_results,
                         training_days) -> str:
         """Build natural-language summary for agent consumption."""
         log.info("   Layer 3: building agent summary…")
@@ -1235,10 +1431,13 @@ class CorrelationEngine:
 
         # AR(1) persistence
         lines.append("[AUTOREGRESSIVE PERSISTENCE]")
-        for m, phi, r2, p, n in ar1_results[:8]:
+        for entry in ar1_results[:8]:
+            m, phi, r2, p, n = entry[:5]
+            is_stationary = entry[5] if len(entry) > 5 else True
             label = ("strong" if r2 > 0.4
                      else ("moderate" if r2 > 0.15 else "weak"))
-            lines.append(f"  {m}: φ={phi:+.3f}, R²={r2:.3f} ({label})")
+            flag = "" if is_stationary else " ⚠ TREND-DOMINATED"
+            lines.append(f"  {m}: φ={phi:+.3f}, R²={r2:.3f} ({label}){flag}")
         lines.append("")
 
         # Distributions
@@ -1251,9 +1450,30 @@ class CorrelationEngine:
 
         # Anomalies
         if anomalies:
-            lines.append("[RECENT ANOMALIES (last 3 days, >1.5σ)]")
+            lines.append("[RECENT ANOMALIES (last 3 days, outside 5th/95th percentile)]")
             for dt, m, val, z, d in anomalies:
                 lines.append(f"  {dt} — {m}={val:.1f} (z={z:+.2f}, {d})")
+            lines.append("")
+
+        # Multi-lag carryover
+        if multi_lag_results:
+            lines.append("[MULTI-DAY CARRYOVER (lag-2 and lag-3 still significant)]")
+            for pred, tgt, lag, r, p, n in multi_lag_results:
+                lines.append(
+                    f"  {pred} → {tgt} (lag-{lag}): r={r:+.3f} (p={p:.4f}, n={n})"
+                    f" — effect persists {lag} days"
+                )
+            lines.append("")
+
+        # Rolling correlation stability
+        if rolling_corr_results:
+            lines.append("[CORRELATION STABILITY (30-day rolling window)]")
+            for rc in rolling_corr_results:
+                a, b = rc["pair"]
+                lines.append(
+                    f"  {a} × {b}: mean_r={rc['mean_r']:+.3f}, "
+                    f"std={rc['std_r']:.3f} ({rc['stability']})"
+                )
             lines.append("")
 
         # Conditioned AR(1)
@@ -1291,7 +1511,7 @@ class CorrelationEngine:
         lines.append("  Smoothing is ADAPTIVE: α shrinks as data grows "
                      "(more data → trust empirical, less smoothing).")
         for mr in markov_results[:8]:
-            labels = BIN_LABELS[:mr["bins"]]
+            labels = mr.get("labels", BIN_LABELS[:mr["bins"]])
             lines.append(
                 f"\n  {mr['target']} ({mr['n_transitions']} transitions, "
                 f"α={mr['smooth_alpha']:.3f}, "
@@ -1334,7 +1554,7 @@ class CorrelationEngine:
                 mr = next((m for m in markov_results
                            if m["target"] == target), None)
                 if mr and mr["best_cond_T"]:
-                    labels_k = BIN_LABELS[:mr["bins"]]
+                    labels_k = mr.get("labels", BIN_LABELS[:mr["bins"]])
                     max_diff = 0
                     diff_desc = ""
                     for i in range(mr["bins"]):

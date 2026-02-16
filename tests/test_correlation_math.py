@@ -19,6 +19,8 @@ from correlation_engine import (
     _adaptive_alpha,
     N_BINS,
     BIN_LABELS,
+    ACWR_EDGES,
+    ACWR_LABELS,
     SMOOTH_ALPHA_MIN,
     SMOOTH_ALPHA_MAX,
     SMOOTH_ALPHA_BASE,
@@ -70,16 +72,32 @@ class TestAdaptiveAlpha:
 class TestConstants:
     """Verify Markov configuration after bins upgrade."""
 
-    def test_n_bins_is_5(self):
-        assert N_BINS == 5
+    def test_n_bins_is_3(self):
+        assert N_BINS == 3
 
-    def test_bin_labels_have_5_entries(self):
-        assert len(BIN_LABELS) == 5
-        assert BIN_LABELS[0] == "VERY_LOW"
-        assert BIN_LABELS[-1] == "VERY_HIGH"
+    def test_bin_labels_have_3_entries(self):
+        assert len(BIN_LABELS) == 3
+        assert BIN_LABELS[0] == "LOW"
+        assert BIN_LABELS[-1] == "HIGH"
 
-    def test_min_transitions_kl_raised(self):
-        assert MIN_TRANSITIONS_KL >= 8
+    def test_min_transitions_kl(self):
+        assert MIN_TRANSITIONS_KL >= 5
+
+    def test_acwr_edges_defined(self):
+        assert len(ACWR_EDGES) == 5
+        assert ACWR_EDGES[1] == 0.8  # sweet spot lower
+        assert ACWR_EDGES[2] == 1.3  # sweet spot upper
+
+    def test_acwr_labels_defined(self):
+        assert len(ACWR_LABELS) == 4
+        assert "SWEET_SPOT" in ACWR_LABELS
+
+    def test_percentile_edges_driven_by_nbins(self):
+        """Percentile edges should have N_BINS + 1 entries."""
+        import numpy as np
+        vals = np.random.randn(100)
+        edges = np.percentile(vals, np.linspace(0, 100, N_BINS + 1))
+        assert len(edges) == N_BINS + 1
 
 
 # ─── Date-gap handling ────────────────────────────────────────
@@ -170,12 +188,15 @@ class TestAR1:
         engine = CorrelationEngine.__new__(CorrelationEngine)
         results = engine._layer2b_ar1(df, ["signal"])
         assert len(results) >= 1
-        metric_name, slope, r2, p, n = results[0]
+        # Tuple now has 6 elements: (metric, slope, r2, p, n, is_stationary)
+        metric_name, slope, r2, p, n, is_stationary = results[0]
         assert metric_name == "signal"
         # φ should be close to 0.8 (within ±0.15 for 100 samples)
         assert abs(slope - 0.8) < 0.15, f"Expected φ ≈ 0.8, got {slope:.3f}"
         # R² should be reasonably high
         assert r2 > 0.3
+        # Stationarity flag should be boolean-like (numpy or Python bool)
+        assert isinstance(is_stationary, (bool, np.bool_))
 
     def test_constant_metric_skipped(self):
         """A constant metric (std=0) should be skipped."""
@@ -192,10 +213,10 @@ class TestAR1:
 
 
 class TestAnomalies:
-    """Test z-score anomaly detection."""
+    """Test percentile-based anomaly detection."""
 
     def test_detects_high_anomaly(self):
-        """Values > 1.5σ above mean should be flagged HIGH."""
+        """Values above 95th percentile should be flagged HIGH."""
         n = 30
         vals = [50.0] * n
         vals[-1] = 100.0  # spike
@@ -219,6 +240,25 @@ class TestAnomalies:
         engine = CorrelationEngine.__new__(CorrelationEngine)
         anomalies = engine._layer2c_anomalies(df, df, ["metric"])
         assert len(anomalies) == 0
+
+    def test_anomaly_uses_percentiles(self):
+        """Verify anomalies are based on 5th/95th percentile, not z-score."""
+        np.random.seed(42)
+        n = 100
+        vals = np.random.exponential(10, n)  # skewed distribution
+        # Add a value just above 95th percentile
+        p95 = np.percentile(vals, 95)
+        vals = list(vals)
+        vals[-1] = p95 + 1  # should be flagged as HIGH
+        df = pd.DataFrame({
+            "date": pd.date_range("2026-01-01", periods=len(vals)),
+            "metric": vals,
+        })
+        engine = CorrelationEngine.__new__(CorrelationEngine)
+        anomalies = engine._layer2c_anomalies(df, df, ["metric"])
+        # At least the last value should be flagged
+        flagged_values = [a[2] for a in anomalies]
+        assert any(v > p95 for v in flagged_values)
 
 
 # ─── Markov transitions ──────────────────────────────────────
@@ -270,14 +310,24 @@ class TestMarkov:
         for r in results:
             assert r["best_kl"] >= 0, f"KL divergence is negative: {r['best_kl']}"
 
-    def test_quintile_bins_used(self):
-        """After upgrade, bins should be ≤ 5 (quintile discretization)."""
+    def test_tertile_bins_used(self):
+        """After upgrade, bins should be ≤ 3 (tertile discretization)."""
         df = self._make_markov_data()
         engine = CorrelationEngine.__new__(CorrelationEngine)
         normality = {"metric": ("non_normal", 0.01)}
         results = engine._layer2e_markov(df, ["metric"], normality)
         assert len(results) >= 1
-        assert results[0]["bins"] <= 5
+        assert results[0]["bins"] <= 3
+
+    def test_markov_result_has_labels(self):
+        """Markov results should include labels list."""
+        df = self._make_markov_data()
+        engine = CorrelationEngine.__new__(CorrelationEngine)
+        normality = {"metric": ("non_normal", 0.01)}
+        results = engine._layer2e_markov(df, ["metric"], normality)
+        assert len(results) >= 1
+        assert "labels" in results[0]
+        assert isinstance(results[0]["labels"], list)
 
 
 # ─── Markov consecutive-day check ────────────────────────────

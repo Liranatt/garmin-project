@@ -316,6 +316,119 @@ def _get_date_range() -> tuple:
     return r.iloc[0]["mn"], r.iloc[0]["mx"]
 
 
+def _load_wellness(target_date) -> dict:
+    """Load wellness_log entry for a specific date."""
+    conn = psycopg2.connect(CONN)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM wellness_log WHERE date = %s", (target_date,))
+        row = cur.fetchone()
+        if row:
+            cols = [desc[0] for desc in cur.description]
+            return dict(zip(cols, row))
+        return {}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def _load_nutrition(target_date) -> pd.DataFrame:
+    """Load all nutrition_log entries for a specific date."""
+    try:
+        return _q("SELECT * FROM nutrition_log WHERE date = %s ORDER BY meal_time, log_id",
+                  params=(target_date,))
+    except Exception:
+        return pd.DataFrame()
+
+
+def _upsert_wellness(target_date, data: dict):
+    """Insert or update wellness_log entry for a date."""
+    conn = psycopg2.connect(CONN)
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO wellness_log
+               (date, caffeine_intake, alcohol_intake, illness_severity,
+                injury_severity, overall_stress_level, energy_level,
+                workout_feeling, muscle_soreness, cycle_phase, notes)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (date) DO UPDATE SET
+                   caffeine_intake = EXCLUDED.caffeine_intake,
+                   alcohol_intake = EXCLUDED.alcohol_intake,
+                   illness_severity = EXCLUDED.illness_severity,
+                   injury_severity = EXCLUDED.injury_severity,
+                   overall_stress_level = EXCLUDED.overall_stress_level,
+                   energy_level = EXCLUDED.energy_level,
+                   workout_feeling = EXCLUDED.workout_feeling,
+                   muscle_soreness = EXCLUDED.muscle_soreness,
+                   cycle_phase = EXCLUDED.cycle_phase,
+                   notes = EXCLUDED.notes,
+                   updated_at = NOW()""",
+            (target_date,
+             data.get("caffeine_intake"),
+             data.get("alcohol_intake"),
+             data.get("illness_severity"),
+             data.get("injury_severity"),
+             data.get("overall_stress_level"),
+             data.get("energy_level"),
+             data.get("workout_feeling"),
+             data.get("muscle_soreness"),
+             data.get("cycle_phase"),
+             data.get("notes")),
+        )
+        cur.close()
+    finally:
+        conn.close()
+
+
+def _insert_nutrition(target_date, data: dict):
+    """Insert a nutrition_log entry."""
+    conn = psycopg2.connect(CONN)
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO nutrition_log
+               (date, calories, protein_grams, carbs_grams, fat_grams,
+                fiber_grams, water_ml, meal_type, meal_description)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (target_date,
+             data.get("calories"),
+             data.get("protein_grams"),
+             data.get("carbs_grams"),
+             data.get("fat_grams"),
+             data.get("fiber_grams"),
+             data.get("water_ml"),
+             data.get("meal_type"),
+             data.get("meal_description")),
+        )
+        cur.close()
+    finally:
+        conn.close()
+
+
+def _delete_nutrition(log_id: int):
+    """Delete a nutrition_log entry by ID."""
+    conn = psycopg2.connect(CONN)
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM nutrition_log WHERE log_id = %s", (log_id,))
+        cur.close()
+    finally:
+        conn.close()
+
+
+def _get_wellness_streak() -> pd.DataFrame:
+    """Get dates with wellness entries for streak display."""
+    try:
+        return _q("SELECT date FROM wellness_log ORDER BY date DESC LIMIT 90")
+    except Exception:
+        return pd.DataFrame()
+
+
 # Plotly layout template
 PL = dict(
     paper_bgcolor="rgba(0,0,0,0)",
@@ -451,6 +564,7 @@ PAGES = [
     "Correlations",
     "Deep Dive",
     "Date Explorer",
+    "Daily Input",
     "Agent Chat",
     "Agent Analysis",
     "Goals",
@@ -483,6 +597,7 @@ def main():
             "Correlations": pg_correlations,
             "Deep Dive": pg_dive,
             "Date Explorer": pg_date_explorer,
+            "Daily Input": pg_daily_input,
             "Agent Chat": pg_chat,
             "Agent Analysis": pg_ai,
             "Goals": pg_goals,
@@ -1546,22 +1661,22 @@ def _multi_agent_chat(question: str, matrix_context: str = "") -> dict:
 
     # Create specialist agents relevant to most questions
     specialists = {
-        "🔬 Matrix Analyst": Agent(
-            role="Correlation Analyst", verbose=False, allow_delegation=False,
-            goal="Provide correlation-backed statistical evidence for the user's question",
-            backstory=f"You interpret correlations, lag-1 predictors, AR(1) persistence, and Markov transitions. {ctx_block}",
-            tools=[], llm=llm,
-        ),
-        "🏋️ Performance": Agent(
-            role="Performance Analyst", verbose=False, allow_delegation=False,
-            goal="Answer from a training and performance perspective",
-            backstory="You analyze activities, training load, ACWR, and performance trends. Use PostgreSQL for daily_metrics and activities tables.",
+        "🔬 Stats & Patterns": Agent(
+            role="Statistical & Pattern Analyst", verbose=False, allow_delegation=False,
+            goal="Provide correlation-backed statistical evidence and pattern analysis for the user's question",
+            backstory=f"You interpret correlations, lag-1 predictors, AR(1) persistence, Markov transitions, and find day-by-day patterns. {ctx_block}",
             tools=tools, llm=llm,
         ),
-        "😴 Sleep Analyst": Agent(
-            role="Sleep Specialist", verbose=False, allow_delegation=False,
-            goal="Answer from a sleep quality perspective",
-            backstory="You analyze sleep architecture (deep/REM/light), sleep score, and how sleep affects next-day metrics. Use PostgreSQL.",
+        "🏋️ Performance & Recovery": Agent(
+            role="Performance & Recovery Analyst", verbose=False, allow_delegation=False,
+            goal="Answer from training, performance, and recovery perspective",
+            backstory="You analyze activities, training load, ACWR, performance trends, and recovery bounce-back. Use PostgreSQL for daily_metrics and activities tables.",
+            tools=tools, llm=llm,
+        ),
+        "😴 Sleep & Lifestyle": Agent(
+            role="Sleep & Lifestyle Analyst", verbose=False, allow_delegation=False,
+            goal="Answer from sleep quality and lifestyle impact perspective",
+            backstory="You analyze sleep architecture (deep/REM/light), sleep score, next-day impact, and connect activities to outcomes. Use PostgreSQL.",
             tools=tools, llm=llm,
         ),
         "🎯 Synthesizer": Agent(
@@ -1591,7 +1706,7 @@ def _multi_agent_chat(question: str, matrix_context: str = "") -> dict:
         except Exception as e:
             results[name] = f"Error: {e}"
 
-    # Run first 3 in parallel, then synthesizer
+    # Run first 3 specialists in parallel, then synthesizer
     threads = []
     for name, agent in list(specialists.items())[:3]:
         t = threading.Thread(target=_run_specialist, args=(name, agent))
@@ -1625,7 +1740,7 @@ def _multi_agent_chat(question: str, matrix_context: str = "") -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
-#  7. AI ANALYSIS — full 9-agent parallel analysis
+#  7. AI ANALYSIS — full 5-agent parallel analysis
 # ══════════════════════════════════════════════════════════════
 
 
@@ -1665,16 +1780,16 @@ def pg_ai(df, days):
     st.markdown('<div class="sh">Run New Analysis</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:.72rem;color:rgba(255,255,255,0.35);margin-bottom:1rem;">'
-        'Cost: ~$0.02 per run (Gemini 2.5 Flash)</div>',
+        'Cost: ~$0.01 per run (Gemini 2.5 Flash)</div>',
         unsafe_allow_html=True,
     )
 
     c1, c2 = st.columns(2)
     with c1:
         mode = st.selectbox("Analysis mode", [
-            "Full 9-Agent Analysis (~30s)",
+            "Full 5-Agent Analysis (~20s)",
             "Goal Analysis — 2 agents (~15s)",
-            "Quick Check — 3 agents (~15s)",
+            "Quick Check — 2 agents (~10s)",
         ], key="ai_mode")
     with c2:
         if "Goal" in mode:
@@ -1687,13 +1802,13 @@ def pg_ai(df, days):
         agents_obj = _get_agents()
 
         if "Full" in mode:
-            with st.spinner("Running all 9 agents in parallel (3 batches × 3 threads)..."):
-                result = _run_9_parallel(agents_obj)
+            with st.spinner("Running 5 agents in parallel..."):
+                result = _run_5_parallel(agents_obj)
         elif "Goal" in mode:
             with st.spinner("Analyzing goal..."):
                 result = str(agents_obj.run_goal_analysis(goal))
         else:
-            with st.spinner("Running quick check (3 agents)..."):
+            with st.spinner("Running quick check (2 agents)..."):
                 result = _run_quick_check(agents_obj)
 
         elapsed = time.time() - t0
@@ -1762,8 +1877,8 @@ def _get_agents():
     return AdvancedHealthAgents()
 
 
-def _run_9_parallel(agents_obj) -> str:
-    """Run all 9 agents in 3 batches of 3 threads."""
+def _run_5_parallel(agents_obj) -> str:
+    """Run 5 consolidated agents in 2 batches + synthesizer."""
     from crewai import Task, Crew, Process
 
     # Load matrix context
@@ -1790,43 +1905,33 @@ def _run_9_parallel(agents_obj) -> str:
             results[name] = f"Error: {e}"
 
     batch1 = [
-        ("CORRELATION MATRIX INTERPRETATION", agents_obj.matrix_analyst,
-         "Interpret the correlation data. Which metric pairs show strong Pearson r? "
-         "What are the key lag-1 predictors? What do the Markov transitions show?",
-         "Key correlations with interpretation"),
-        ("CROSS-TIMEFRAME STABILITY", agents_obj.matrix_comparator,
-         "Compare metric relationships across time windows. "
-         "Which correlations are ROBUST vs just recent noise?",
-         "Stability classification of key patterns"),
-        ("HIDDEN PATTERNS", agents_obj.pattern_detective,
-         "Find the top 3 non-obvious patterns. Look for day-of-week effects, "
-         "delayed correlations, unexpected interactions. Query the database for evidence.",
-         "3 hidden patterns with evidence"),
+        ("STATISTICAL INTERPRETATION", agents_obj.statistical_interpreter,
+         "Interpret the correlation data: Pearson r pairs, lag-1 predictors, "
+         "AR(1) persistence, Markov transitions, KL-divergence, conditioned AR(1). "
+         "If multi-window data available, assess cross-timeframe stability.",
+         "Full statistical interpretation with stability analysis"),
+        ("PATTERNS & TRENDS", agents_obj.health_pattern_analyst,
+         "Find 3-5 non-obvious day-by-day patterns AND rigorously assess trends "
+         "for key metrics. Query the database for evidence. "
+         "Report CV, directional trends, outlier tests.",
+         "Patterns + per-metric trend analysis with confidence"),
     ]
     batch2 = [
-        ("PERFORMANCE OPTIMIZATION", agents_obj.performance_optimizer,
-         "Analyze peak vs poor performance days. What conditions predict great training days?",
-         "Peak performance conditions + recommendations"),
-        ("RECOVERY ASSESSMENT", agents_obj.recovery_specialist,
-         "Assess recovery: HRV trend, sleep quality, body battery, RHR. "
-         "Signs of overtraining? Bounce-back speed?",
-         "Recovery status with recommendation"),
-        ("TRENDS & FORECASTS", agents_obj.trend_forecaster,
-         "Project current trends. Which metrics improving/declining? Early warnings?",
-         "Trend projections with early warnings"),
+        ("PERFORMANCE & RECOVERY", agents_obj.performance_recovery,
+         "Week-over-week comparison of key metrics + recovery assessment. "
+         "Best/worst days, ACWR analysis, bounce-back after hard days, "
+         "overtraining checklist.",
+         "Performance comparison + recovery status"),
+        ("SLEEP & LIFESTYLE", agents_obj.sleep_lifestyle,
+         "Sleep architecture (deep/REM/light %%), consistency, next-day impact. "
+         "Activity-to-outcome day stories. What conditions shift outcomes?",
+         "Sleep analysis + lifestyle connections"),
     ]
     batch3 = [
-        ("LIFESTYLE CONNECTIONS", agents_obj.lifestyle_analyst,
-         "Which lifestyle factors most impact health outcomes? "
-         "What differentiates good days from bad days?",
-         "Lifestyle impact analysis"),
-        ("SLEEP ANALYSIS", agents_obj.sleep_analyst,
-         "Deep/REM/light as % of total vs clinical norms. Consistency. "
-         "Next-day impact of sleep quality.",
-         "Sleep architecture analysis"),
-        ("BOTTLENECK & QUICK WINS", agents_obj.weakness_identifier,
-         "What is the #1 bottleneck? What are 3 quick wins for next week?",
-         "1 bottleneck + 3 quick wins"),
+        ("BOTTLENECK & QUICK WINS", agents_obj.synthesizer,
+         "Synthesize all findings. #1 bottleneck? Top 3 quick wins? "
+         "Fact-check previous agents. What's already working?",
+         "Fact-checked synthesis with priorities"),
     ]
 
     for batch in [batch1, batch2, batch3]:
@@ -1845,7 +1950,7 @@ def _run_9_parallel(agents_obj) -> str:
 
 
 def _run_quick_check(agents_obj) -> str:
-    """Run 3 key agents for a quick check."""
+    """Run 2 key agents for a quick check."""
     from crewai import Task, Crew, Process
 
     results: dict[str, str] = {}
@@ -1859,13 +1964,11 @@ def _run_quick_check(agents_obj) -> str:
             results[name] = f"Error: {e}"
 
     batch = [
-        ("PERFORMANCE SUMMARY", agents_obj.performance_optimizer,
-         "Quick week-over-week comparison: key metrics this week vs last week.",
-         "Week-over-week comparison"),
-        ("RECOVERY STATUS", agents_obj.recovery_specialist,
-         "Quick recovery assessment: are we good to train or need rest?",
-         "Recovery status"),
-        ("TOP PRIORITIES", agents_obj.weakness_identifier,
+        ("PERFORMANCE & RECOVERY", agents_obj.performance_recovery,
+         "Quick week-over-week comparison + recovery status: "
+         "key metrics this week vs last week, are we good to train?",
+         "Performance + recovery summary"),
+        ("TOP PRIORITIES", agents_obj.synthesizer,
          "What's the #1 thing to focus on this week?",
          "Top priority with evidence"),
     ]
@@ -2007,6 +2110,236 @@ def pg_goals(df, days):
             )
 
     _page_chat("goals", "The user is viewing weekly trends and goal progress.")
+
+
+# ══════════════════════════════════════════════════════════════
+#  9. DAILY INPUT
+# ══════════════════════════════════════════════════════════════
+
+
+def pg_daily_input(df: pd.DataFrame, days: int):
+    """Daily self-reported wellness and nutrition tracking page."""
+    st.markdown('<h2 style="font-weight:800;">📝 Daily Input</h2>', unsafe_allow_html=True)
+    st.caption(
+        "Log subjective wellness and nutrition data daily. "
+        "These inputs are automatically correlated with your Garmin metrics "
+        "in the next weekly analysis."
+    )
+
+    from datetime import date as dt_date, timedelta
+
+    # ── Date picker ──
+    selected_date = st.date_input(
+        "Date", value=dt_date.today(),
+        max_value=dt_date.today(),
+        min_value=dt_date.today() - timedelta(days=90),
+    )
+
+    # ── Load existing data for this date ──
+    existing_wellness = _load_wellness(selected_date)
+    existing_nutrition = _load_nutrition(selected_date)
+
+    col_left, col_right = st.columns(2, gap="large")
+
+    # ──────────────────────────────────────────────────────────
+    #  WELLNESS LOG (left column)
+    # ──────────────────────────────────────────────────────────
+    with col_left:
+        st.markdown('<div class="sh">Wellness Log</div>', unsafe_allow_html=True)
+
+        with st.form("wellness_form", clear_on_submit=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                caffeine = st.number_input(
+                    "☕ Caffeine (mg)", min_value=0, max_value=2000, step=50,
+                    value=int(existing_wellness.get("caffeine_intake") or 0),
+                )
+                alcohol = st.number_input(
+                    "🍺 Alcohol (drinks)", min_value=0, max_value=30, step=1,
+                    value=int(existing_wellness.get("alcohol_intake") or 0),
+                )
+                illness = st.number_input(
+                    "🤒 Illness Severity (0-5)", min_value=0, max_value=5,
+                    value=int(existing_wellness.get("illness_severity") or 0),
+                )
+                injury = st.number_input(
+                    "🩹 Injury Severity (0-5)", min_value=0, max_value=5,
+                    value=int(existing_wellness.get("injury_severity") or 0),
+                )
+
+            with c2:
+                stress = st.slider(
+                    "😰 Perceived Stress (0-100)", 0, 100,
+                    value=int(existing_wellness.get("overall_stress_level") or 50),
+                )
+                energy = st.slider(
+                    "⚡ Energy Level (0-100)", 0, 100,
+                    value=int(existing_wellness.get("energy_level") or 50),
+                )
+                workout_feel = st.slider(
+                    "💪 Workout Feeling (0-100)", 0, 100,
+                    value=int(existing_wellness.get("workout_feeling") or 50),
+                )
+                soreness = st.slider(
+                    "🦵 Muscle Soreness (0-5)", 0, 5,
+                    value=int(existing_wellness.get("muscle_soreness") or 0),
+                )
+
+            cycle_options = ["N/A", "menstruation", "follicular", "ovulation", "luteal"]
+            existing_cycle = existing_wellness.get("cycle_phase") or "N/A"
+            cycle_idx = cycle_options.index(existing_cycle) if existing_cycle in cycle_options else 0
+            cycle = st.selectbox("Cycle Phase", cycle_options, index=cycle_idx)
+
+            notes = st.text_area(
+                "📝 Notes",
+                value=existing_wellness.get("notes") or "",
+                placeholder="How are you feeling? Anything unusual?",
+            )
+
+            submitted_wellness = st.form_submit_button(
+                "💾 Save Wellness Log", use_container_width=True,
+            )
+
+        if submitted_wellness:
+            _upsert_wellness(selected_date, {
+                "caffeine_intake": caffeine,
+                "alcohol_intake": alcohol,
+                "illness_severity": illness,
+                "injury_severity": injury,
+                "overall_stress_level": stress,
+                "energy_level": energy,
+                "workout_feeling": workout_feel,
+                "muscle_soreness": soreness,
+                "cycle_phase": None if cycle == "N/A" else cycle,
+                "notes": notes if notes.strip() else None,
+            })
+            st.success(f"✅ Wellness log saved for {selected_date}")
+            st.rerun()
+
+    # ──────────────────────────────────────────────────────────
+    #  NUTRITION LOG (right column)
+    # ──────────────────────────────────────────────────────────
+    with col_right:
+        st.markdown('<div class="sh">Nutrition Log</div>', unsafe_allow_html=True)
+
+        with st.form("nutrition_form", clear_on_submit=True):
+            meal_type = st.selectbox(
+                "🍽️ Meal", ["breakfast", "lunch", "dinner", "snack"],
+            )
+            nc1, nc2 = st.columns(2)
+            with nc1:
+                calories = st.number_input("Calories", min_value=0, max_value=5000, step=50, value=0)
+                protein = st.number_input("Protein (g)", min_value=0.0, max_value=500.0, step=5.0, value=0.0)
+                carbs = st.number_input("Carbs (g)", min_value=0.0, max_value=500.0, step=5.0, value=0.0)
+            with nc2:
+                fat = st.number_input("Fat (g)", min_value=0.0, max_value=300.0, step=5.0, value=0.0)
+                fiber = st.number_input("Fiber (g)", min_value=0.0, max_value=100.0, step=1.0, value=0.0)
+                water = st.number_input("Water (ml)", min_value=0, max_value=5000, step=100, value=0)
+
+            description = st.text_input(
+                "Description", placeholder="e.g., Chicken breast + rice",
+            )
+
+            submitted_nutrition = st.form_submit_button(
+                "➕ Add Meal", use_container_width=True,
+            )
+
+        if submitted_nutrition and calories > 0:
+            _insert_nutrition(selected_date, {
+                "calories": calories,
+                "protein_grams": protein,
+                "carbs_grams": carbs,
+                "fat_grams": fat,
+                "fiber_grams": fiber,
+                "water_ml": water,
+                "meal_type": meal_type,
+                "meal_description": description if description.strip() else None,
+            })
+            st.success(f"✅ {meal_type.title()} added")
+            st.rerun()
+
+        # Show today's meals
+        if not existing_nutrition.empty:
+            st.markdown('<div class="sh">Today\'s Meals</div>', unsafe_allow_html=True)
+            for _, meal in existing_nutrition.iterrows():
+                desc = meal.get("meal_description") or ""
+                cals = meal.get("calories") or 0
+                prot = meal.get("protein_grams") or 0
+                mt = (meal.get("meal_type") or "meal").title()
+                st.markdown(
+                    f'<div class="gc" style="padding:.6rem 1rem;margin-bottom:.4rem;">'
+                    f'<span style="font-weight:700;color:#00f5a0;">{mt}</span>'
+                    f' — {cals} kcal · {prot:.0f}g protein'
+                    f'<span style="color:rgba(255,255,255,0.3);font-size:.7rem;"> {desc}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # Daily totals
+            total_cal = existing_nutrition["calories"].sum()
+            total_prot = existing_nutrition["protein_grams"].sum()
+            total_carb = existing_nutrition["carbs_grams"].sum()
+            total_fat_val = existing_nutrition["fat_grams"].sum()
+            st.markdown(
+                f'<div class="gc" style="padding:.8rem 1rem;margin-top:.5rem;">'
+                f'<div style="font-weight:800;color:#fff;font-size:.85rem;">Daily Totals</div>'
+                f'<div style="color:rgba(255,255,255,0.6);font-size:.75rem;margin-top:.3rem;">'
+                f'🔥 {total_cal:.0f} kcal · '
+                f'🥩 {total_prot:.0f}g protein · '
+                f'🍞 {total_carb:.0f}g carbs · '
+                f'🧈 {total_fat_val:.0f}g fat</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    # ──────────────────────────────────────────────────────────
+    #  LOGGING STREAK
+    # ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="sh">Logging Streak</div>', unsafe_allow_html=True)
+
+    streak_df = _get_wellness_streak()
+    if not streak_df.empty:
+        streak_dates = set(pd.to_datetime(streak_df["date"]).dt.date)
+        today = dt_date.today()
+
+        # Count consecutive days streak
+        streak = 0
+        check = today
+        while check in streak_dates:
+            streak += 1
+            check -= timedelta(days=1)
+
+        st.markdown(
+            f'<div class="gc" style="padding:1rem;text-align:center;">'
+            f'<div style="font-size:2rem;font-weight:800;color:#00f5a0;">{streak}</div>'
+            f'<div style="font-size:.7rem;color:rgba(255,255,255,0.4);text-transform:uppercase;'
+            f'letter-spacing:.1em;">day streak</div>'
+            f'<div style="font-size:.65rem;color:rgba(255,255,255,0.25);margin-top:.3rem;">'
+            f'{len(streak_dates)} total entries logged</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        # Show last 30 days as dots
+        dots = []
+        for i in range(29, -1, -1):
+            d = today - timedelta(days=i)
+            if d in streak_dates:
+                dots.append(f'<span style="display:inline-block;width:12px;height:12px;'
+                            f'border-radius:50%;background:#00f5a0;margin:2px;" '
+                            f'title="{d}"></span>')
+            else:
+                dots.append(f'<span style="display:inline-block;width:12px;height:12px;'
+                            f'border-radius:50%;background:rgba(255,255,255,0.08);margin:2px;" '
+                            f'title="{d}"></span>')
+
+        st.markdown(
+            f'<div style="text-align:center;padding:.5rem;">{"".join(dots)}</div>'
+            f'<div style="text-align:center;font-size:.55rem;color:rgba(255,255,255,0.2);">'
+            f'Last 30 days (green = logged)</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("No wellness entries yet. Start logging to build your streak!")
 
 
 # ═══════════════════════════════════════════════════════════════

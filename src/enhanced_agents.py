@@ -174,408 +174,257 @@ class AdvancedHealthAgents:
             analyze_pattern
         ]
         
-        # Define specialized agents
-        self.pattern_detective = Agent(
-            role='Health Pattern Detective',
-            goal='Discover hidden patterns and correlations in health data ג€” but only patterns that survive scrutiny',
-            backstory="""You are a data detective who finds non-obvious, REAL patterns.
-            
-            CRITICAL RULES:
-            - Before reporting any correlation, check the sample size (n).
-              If n<20, say so explicitly and mark the finding as PRELIMINARY.
-            - Look at the actual day-by-day values, not just aggregates.
-              If a "trend" is driven by a single outlier day, say so.
-            - Check for data quality issues: a value of 0 for rem_sleep_sec,
-              hrv_last_night, or sleep_score likely means a tracking failure
-              (watch off, bad sensor contact), NOT a real event. Flag these.
-            - Distinguish between DIFFERENT metrics that sound similar:
-              tr_acute_load (daily EPOC from Garmin readiness) is NOT the same as
-              daily_load_acute (7-day rolling training load from bulk export).
-              training_load (per-activity EPOC) is NOT the same as either.
-            - When citing a correlation (e.g. r=-0.972), verify it against the
-              actual day-by-day data. Does it hold when you look at individual days?
-            - Don't just parrot correlation numbers ג€” explain what they mean
-              in concrete terms the user can act on.""",
-            verbose=True,
-            allow_delegation=False,
-            tools=self.tools,
-            llm=_get_llm()
-        )
-        
-        self.performance_optimizer = Agent(
-            role='Performance Optimization Specialist',
-            goal='Compare this week to last week using actual numbers ג€” no storytelling without evidence',
-            backstory="""You compare performance week-over-week with honest reporting.
-            
-            CRITICAL RULES:
-            - Report the ACTUAL numbers side by side (this week avg vs last week avg).
-            - If a metric looks worse on average but was dragged down by one bad day,
-              say so. Compute the average WITH and WITHOUT the outlier.
-            - A change of <5%% between weeks is "stable", not a "decline" or "improvement".
-              Only changes >10%% or >1 standard deviation warrant attention.
-            - When RHR or HRV changes, check if it's sustained (consistent daily values)
-              or volatile (big day-to-day swings). A volatile improvement is less reliable.
-            - Look at the BEST day and WORST day this week ג€” often the spread
-              tells a bigger story than the average.
-            - If a metric has no data for one of the weeks, say "no comparison
-              available" instead of speculating.""",
-            verbose=True,
-            allow_delegation=False,
-            tools=self.tools,
-            llm=_get_llm()
-        )
-        
-        self.recovery_specialist = Agent(
-            role='Recovery & Adaptation Expert',
-            goal='Assess recovery using multi-day sequences, not single-day snapshots',
-            backstory="""You are a recovery expert who reads the day-to-day SEQUENCE, not averages.
-            
-            CRITICAL RULES:
-            - Look at what happens AFTER hard days: does HRV bounce back the next day?
-              Does resting HR normalize? Does body battery fully recharge?
-              The bounce-back speed is more important than any single metric.
-            - Don't call something "overtraining" unless you see MULTIPLE metrics
-              declining simultaneously over MULTIPLE consecutive days.
-              A single bad day followed by full recovery is normal and healthy.
-            - ACWR (acute:chronic workload ratio) interpretation:
-              0.8-1.3 = optimal, <0.8 = detraining risk, >1.5 = injury risk.
-              Cite the actual number and where it falls.
-            - bb_charged is influenced by sleep quality AND stress, not just training.
-              Don't attribute low bb_charged solely to training intensity.
-            - When assessing overtraining risk, check convergent evidence:
-              is RHR rising? Is HRV declining? Is sleep quality dropping?
-              If only 1 of 3 is off, it's NOT an overtraining signal.""",
-            verbose=True,
-            allow_delegation=False,
-            tools=self.tools,
-            llm=_get_llm()
-        )
-        
-        self.lifestyle_analyst = Agent(
-            role='Lifestyle Impact Analyst',
-            goal='Find causal connections between daily behaviors and biometric outcomes',
-            backstory="""You connect what the user DID to what the body MEASURED.
-            
-            CRITICAL RULES:
-            - Use the activities table to see what actually happened each day
-              (type, duration, intensity, HR). Don't guess about training.
-            - Look at the KL-divergence results for conditional effects ג€”
-              these show which conditions ACTUALLY shift state transitions.
-            - If data for a question doesn't exist (e.g., time-of-day patterns,
-              caffeine, alcohol), state clearly "this data is not available"
-              instead of speculating.
-            - Look at specific day pairs: what happened on day X, and what
-              was the biometric response on day X+1? Tell the story of
-              specific days, not abstract correlations.
-            - Use the activities table to distinguish training types:
-              cycling commutes (5-10 min, low HR) are NOT the same as
-              training sessions (30+ min, elevated HR).""",
-            verbose=True,
-            allow_delegation=False,
-            tools=self.tools,
-            llm=_get_llm()
-        )
-        
-        self.trend_forecaster = Agent(
-            role='Health Trend Forecaster',
-            goal='Identify trends only when they exist in the actual data trajectory',
-            backstory="""You look at trajectories rigorously.
-            
-            CRITICAL RULES:
-            - A "trend" requires at least 3 consecutive data points moving in the
-              same direction. Two points is just noise.
-            - High VARIANCE is different from a TREND. If values bounce between
-              high and low (e.g., sleep 52ג†’89ג†’72ג†’83ג†’70), that's variability,
-              not a decline. Report it as such.
-            - Use the Markov state transitions to inform predictions, but note
-              the sample sizes (number of transitions). Small samples make
-              transition probabilities unreliable.
-            - For each metric, compute the coefficient of variation (std/mean).
-              If CV > 20%%, the metric is volatile and trend-calling is unreliable.
-            - Be honest about uncertainty: with 7-14 data points, predictions
-              are educated guesses. Say "may" and "suggests" rather than "will".
-            - Check if a "trend" survives removing the single best and worst days.
-              If it doesn't, it's not a real trend.""",
-            verbose=True,
-            allow_delegation=False,
-            tools=self.tools,
-            llm=_get_llm()
-        )
-        
-        self.matrix_analyst = Agent(
-            role='Correlation Matrix Analyst',
-            goal='Interpret EVERY section of the pre-computed correlation matrix and explain what it means in plain language',
-            backstory="""You are a statistics interpreter. Your ONLY job is to read the
-            full correlation analysis output and translate it into clear findings.
-            
-            You do NOT give lifestyle advice or recommendations.
-            You do NOT query the database.
-            You ONLY interpret the numbers.
-            
-            You MUST cover ALL of these sections ג€” skip NONE:
-            1. TRAINING INTENSITY CLASSIFICATION ג€” which days were hard/easy
-            2. SAME-DAY CORRELATIONS ג€” strongest Pearson pairs and what they mean
-            3. NEXT-DAY PREDICTORS ג€” what yesterday predicts about today
-            4. AUTOREGRESSIVE PERSISTENCE ג€” which metrics are "sticky" (high Rֲ²)
-            5. DISTRIBUTIONS ג€” which metrics are normal vs skewed
-            6. RECENT ANOMALIES ג€” z-scores from last 3 days, what's unusual
-            7. CONDITIONED AR(1) ג€” the most powerful section: which variable
-               COMBINATIONS predict next-day outcomes, and how much they improve
-               over simple persistence. Report the Rֲ² improvement.
-            8. MARKOV STATE TRANSITIONS ג€” state stickiness, note sample sizes
-            9. KL-DIVERGENCE ג€” which conditions shift Markov predictions
-            10. METRIC RANGES ג€” current baselines
-            
+        # ── 5 Consolidated Agents (merged from original 9 for cost efficiency) ──
+
+        self.statistical_interpreter = Agent(
+            role='Statistical Interpreter',
+            goal='Interpret EVERY section of the pre-computed correlation data and assess cross-timeframe stability',
+            backstory="""You are a statistics interpreter and longitudinal analysis expert.
+            Your job has two parts:
+
+            PART 1 — SINGLE-WINDOW INTERPRETATION:
+            Read the full correlation analysis and translate it into clear findings.
+            You MUST cover ALL sections — skip NONE:
+            1. TRAINING INTENSITY CLASSIFICATION
+            2. SAME-DAY CORRELATIONS — strongest Pearson pairs
+            3. NEXT-DAY PREDICTORS — what yesterday predicts
+            4. AUTOREGRESSIVE PERSISTENCE — which metrics are "sticky"
+            5. DISTRIBUTIONS — normal vs skewed
+            6. RECENT ANOMALIES — z-scores from last 3 days
+            7. CONDITIONED AR(1) — which variable COMBINATIONS predict
+               next-day outcomes, R² improvement over simple persistence
+            8. MARKOV STATE TRANSITIONS — state stickiness + sample sizes
+            9. KL-DIVERGENCE — which conditions shift predictions
+            10. METRIC RANGES — current baselines
+
+            PART 2 — CROSS-TIMEFRAME STABILITY (if multi-window data provided):
+            Compare across time windows and classify:
+            ROBUST = stable across ALL windows
+            STABLE = appears at 2+ adjacent windows
+            EMERGING = only at shortest window
+            SPARSE = too few data points
+            Correlations that STRENGTHEN as n grows = trustworthy.
+            Correlations that WEAKEN as n grows = likely spurious.
+
             For each section, report:
             - KEY FINDING (1-2 sentences)
             - CONFIDENCE (based on n and statistical significance)
-            - PRACTICAL MEANING (what this means for the user, no jargon)
-            
+            - PRACTICAL MEANING (no jargon)
+
+            You do NOT give lifestyle advice. You ONLY interpret numbers.
             Flag any finding with n<20 as PRELIMINARY.
-            Flag any metric with CV>20% as VOLATILE.""",
+            Flag any metric with CV>20%% as VOLATILE.""",
             verbose=True,
             allow_delegation=False,
-            tools=[],  # No tools needed ג€” purely interprets the context
+            tools=[],
             llm=_get_llm()
         )
 
-        self.matrix_comparator = Agent(
-            role='Multi-Scale Benchmark Analyst',
-            goal='Compare correlation matrices across multiple time windows (7d, 14d, 21d, 30d, 60d, 90d, 180d, 365d) and identify which findings are robust vs window-dependent',
-            backstory="""You are a longitudinal statistics expert specializing in
-            multi-scale temporal analysis. You receive correlation matrices computed
-            over progressively larger time windows ג€” from 1 week to 1 year ג€” and
-            determine which statistical patterns are ROBUST (stable across all
-            windows) vs FRAGILE (sensitive to window size).
+        self.health_pattern_analyst = Agent(
+            role='Health Pattern & Trend Analyst',
+            goal='Discover hidden patterns and rigorously assess trends — only report findings that survive scrutiny',
+            backstory="""You find non-obvious patterns AND rigorously evaluate trends.
 
-            CRITICAL RULES:
-            - A change in Pearson r of <0.15 across windows is noise, not real.
-            - A change in AR(1) Rֲ² of <0.10 is not meaningful.
-            - Markov transitions need ג‰¥5 transitions per state to be meaningful.
-            - KL-divergence changes are meaningful if shift >0.03.
-            - Correlations that STRENGTHEN as n grows ג†’ trustworthy.
-            - Correlations that WEAKEN as n grows ג†’ likely spurious.
-            - When a metric has no data at a short window but appears at longer
-              windows, that's DATA SPARSITY, not emergence.
-            - CONFIDENCE TIERS:
-              ROBUST = appears at ALL windows ג†’ highest confidence
-              STABLE = appears at 2+ adjacent windows ג†’ good confidence
-              EMERGING = only at shortest window ג†’ recent, needs monitoring
-              LONGER-WINDOW-ONLY = only at longer windows ג†’ needs more data
-              SPARSE = too few data points ג†’ inconclusive
-            - You do NOT give lifestyle advice. You ONLY interpret the
-              statistical stability across time scales.""",
+            PATTERN DETECTION RULES:
+            - Check sample size (n). If n<20, mark as PRELIMINARY.
+            - Look at actual day-by-day values, not just aggregates.
+              If a "trend" is driven by a single outlier, say so.
+            - Data quality: 0 for rem_sleep_sec/hrv_last_night or
+              sleep_score < 40 = likely tracking failure. Flag these.
+            - Distinguish metrics: tr_acute_load, daily_load_acute,
+              and training_load (per-activity) are THREE DIFFERENT things.
+            - When citing a correlation, verify against day-by-day data.
+
+            TREND ANALYSIS RULES:
+            - A "trend" needs 3+ consecutive points in same direction.
+            - High VARIANCE is not a TREND. Bouncing = variability.
+            - Compute CV (std/mean). CV > 20%% = volatile.
+            - Check if trend survives removing best and worst days.
+            - Use "may" and "suggests" with limited data.
+
+            Report each finding as:
+            FINDING: [name]
+            EVIDENCE: [specific days and numbers]
+            SAMPLE SIZE: n=[number]
+            CONFIDENCE: HIGH / PRELIMINARY / SUSPECT
+            VERDICT: IMPROVING / DECLINING / STABLE / VOLATILE""",
             verbose=True,
             allow_delegation=False,
-            tools=[],  # Purely interprets pre-computed comparison context
+            tools=self.tools,
             llm=_get_llm()
         )
 
-        self.weakness_identifier = Agent(
-            role='Weakness & Opportunity Identifier',
+        self.performance_recovery = Agent(
+            role='Performance & Recovery Analyst',
+            goal='Compare performance week-over-week AND assess recovery capacity with honest evidence',
+            backstory="""You analyze both performance trends and recovery quality.
+
+            PERFORMANCE RULES:
+            - Report ACTUAL numbers (this week avg vs last week avg).
+            - If average is dragged by one bad day, compute WITH and WITHOUT.
+            - Change <5%% = "stable". Only >10%% warrants attention.
+            - Check if changes are sustained or volatile.
+            - Report BEST and WORST day — spread matters more than average.
+
+            RECOVERY RULES:
+            - After hard days: does HRV bounce back? Does RHR normalize?
+              Bounce-back speed > any single metric.
+            - Don't call "overtraining" unless MULTIPLE metrics decline
+              simultaneously over MULTIPLE consecutive days.
+            - ACWR: 0.8-1.3 = optimal, <0.8 = detraining, >1.5 = injury risk.
+            - bb_charged depends on sleep AND stress, not just training.
+            - Overtraining needs convergent evidence: RHR up + HRV down +
+              sleep worse. If only 1 of 3, NOT overtraining.
+            - Report next-day response after hard days with specific numbers.
+            - Recovery speed: Fast (<24h), Moderate (24-48h), Slow (>48h).""",
+            verbose=True,
+            allow_delegation=False,
+            tools=self.tools,
+            llm=_get_llm()
+        )
+
+        self.sleep_lifestyle = Agent(
+            role='Sleep & Lifestyle Analyst',
+            goal='Deep-dive into sleep architecture AND connect daily activities to biometric outcomes',
+            backstory="""You cover sleep quality and lifestyle impact.
+
+            SLEEP RULES:
+            - Report architecture: deep/rem/light as minutes AND %%.
+              Norms: Deep 15-20%%, REM 20-25%%, Light 50-60%%.
+            - Consistency (CV) > single nights. CV > 15%% = inconsistent.
+            - SUSPECT DATA: rem=0, deep=0, score<40, sleep<4hrs.
+              Report averages WITH and WITHOUT suspect nights.
+            - Show NEXT-DAY IMPACT per night with specific numbers.
+            - avg_respiration > 16/min during sleep = flag.
+            - Compare this week vs last week sleep metrics.
+
+            LIFESTYLE RULES:
+            - Use activities table for actual data (type, duration, HR).
+            - Classify properly: 7-min bike commute != cycling workout.
+            - Build DAY STORIES: "Feb X: [activity] -> Feb X+1: [response]"
+            - Use KL-divergence for which conditions shift transitions.
+            - If data doesn't exist (caffeine, alcohol), say "not available".
+            - Every finding must cite specific numbers.""",
+            verbose=True,
+            allow_delegation=False,
+            tools=self.tools,
+            llm=_get_llm()
+        )
+
+        self.synthesizer = Agent(
+            role='Synthesizer & Fact-Checker',
             goal='Find the #1 real bottleneck and give brutally specific, data-backed recommendations',
-            backstory="""You synthesize all previous agents' findings and identify what matters most.
-            
+            backstory="""You synthesize all previous agents' findings and identify
+            what matters most.
+
             CRITICAL RULES:
-            - Your recommendations must be DIRECTLY supported by correlation data
+            - Recommendations must be DIRECTLY supported by correlation data
               or day-by-day patterns. No generic wellness advice.
             - If previous agents disagreed or made errors, call it out.
-              You are the fact-checker, not a yes-man.
-            - Distinguish between correlation and causation. "r=0.97" with n=5
-              is not actionable evidence. Say so.
+            - Distinguish correlation from causation. r=0.97 with n=5(!) = weak.
             - For each quick win, state the SPECIFIC metric you expect to
               improve and by HOW MUCH based on the data.
-            - Look at what's ALREADY going well (positive trends) and call
-              those out too. Not everything needs fixing.
-            - If the biggest issue is data quality (missing values, sensor
-              failures, short history), say that before recommending
-              lifestyle changes.""",
+            - Call out what's ALREADY going well. Not everything needs fixing.
+            - If the biggest issue is data quality, say that first.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
             llm=_get_llm()
         )
 
-        self.sleep_analyst = Agent(
-            role='Sleep Quality Analyst',
-            goal='Provide a deep, data-driven breakdown of sleep architecture, consistency, and its downstream effects',
-            backstory="""You are a dedicated sleep specialist. Sleep is your ONLY focus.
-            You analyze every dimension of sleep: duration, architecture (deep, REM,
-            light), consistency across nights, and how sleep quality cascades into
-            next-day readiness, HRV, stress, and performance.
+        # ── Backward-compatible aliases for dashboard/weekly_sync ──
+        self.matrix_analyst = self.statistical_interpreter
+        self.matrix_comparator = self.statistical_interpreter
+        self.pattern_detective = self.health_pattern_analyst
+        self.trend_forecaster = self.health_pattern_analyst
+        self.performance_optimizer = self.performance_recovery
+        self.recovery_specialist = self.performance_recovery
+        self.lifestyle_analyst = self.sleep_lifestyle
+        self.sleep_analyst = self.sleep_lifestyle
+        self.weakness_identifier = self.synthesizer
 
-            CRITICAL RULES:
-            - ALWAYS report sleep architecture breakdown: deep_sleep_sec,
-              rem_sleep_sec, light_sleep_sec as both raw minutes AND percentage
-              of total sleep_seconds. Compare to clinical norms:
-              Deep 15-20%, REM 20-25%, Light 50-60%.
-            - CONSISTENCY matters more than single nights. Compute the
-              coefficient of variation (CV = std/mean) for sleep_score,
-              total sleep_seconds, and each stage. CV > 15% = inconsistent.
-            - Flag SUSPECT DATA: rem_sleep_sec=0, deep_sleep_sec=0,
-              sleep_score < 40, or sleep_seconds < 14400 (4 hours) likely
-              means the watch was removed. Mark as SUSPECT and exclude from
-              averages. Report both WITH and WITHOUT suspect nights.
-            - NEXT-DAY IMPACT: For each night, show the next-day response:
-              "Night of Feb X: sleep_score=Y, deep=Z min ג†’ Feb X+1: HRV=A,
-              stress=B, readiness=C". Look for which sleep metrics best
-              predict next-day outcomes.
-            - SLEEP TIMING: If body_battery_change (BB gained during sleep)
-              varies widely, that suggests inconsistent sleep timing or
-              quality even when duration is similar.
-            - RESPIRATION: avg_respiration during sleep ג€” elevated breathing
-              rate (>16/min) can indicate illness, stress, or poor sleep
-              environment.
-            - Use Markov transitions and KL-divergence related to sleep
-              metrics if available ג€” which conditions lead to GOOD vs BAD
-              sleep states?
-            - Do NOT give generic sleep hygiene advice. Every recommendation
-              must cite a specific number from this week's data.""",
-            verbose=True,
-            allow_delegation=False,
-            tools=self.tools,
-            llm=_get_llm()
-        )
-    
     def create_deep_analysis_tasks(self, analysis_period: int = 30) -> List[Task]:
-        """Create comprehensive analysis tasks"""
-        
+        """Create comprehensive analysis tasks (4 agents)"""
+
         tasks = [
             Task(
                 description=f"""
-                Analyze the last {analysis_period} days of data to find hidden patterns.
-                
-                Your mission:
-                1. Look for unexpected correlations between metrics
-                   - Does stress correlate with poor sleep?
-                   - Does HRV predict training readiness?
-                   - Are there day-of-week patterns?
-                
-                2. Identify what the user doesn't know
-                   - What metrics move together?
-                   - What's the leading indicator of poor performance?
-                   - What lifestyle factors have the biggest impact?
-                
-                3. Find the non-obvious insights
-                   Use correlation analysis and pattern detection tools
-                
+                Analyze the last {analysis_period} days to find hidden patterns
+                AND rigorously evaluate trends.
+
+                PATTERNS:
+                1. Look for unexpected correlations (stress vs sleep, HRV vs readiness)
+                2. Day-of-week patterns, delayed correlations
+                3. Verify each pattern against day-by-day data
+
+                TRENDS — for HRV, resting HR, sleep_score, stress, readiness, ACWR:
+                1. List daily values, compute mean/std/CV
+                2. Is there a directional trend (3+ consecutive days)?
+                3. Does the trend survive removing best/worst days?
+                4. Verdicts: IMPROVING / DECLINING / STABLE / VOLATILE
+
                 Be specific with data evidence.
                 """,
-                agent=self.pattern_detective,
-                expected_output="3-5 hidden patterns with specific correlation data"
+                agent=self.health_pattern_analyst,
+                expected_output="3-5 hidden patterns + per-metric trend analysis with confidence"
             ),
-            
+
             Task(
                 description=f"""
-                Analyze what leads to peak performance vs poor performance.
-                
-                Steps:
-                1. Find the best training days (highest readiness, best workouts)
-                2. Find the worst training days (low energy, poor performance)
-                3. Compare the conditions:
-                   - Sleep quality the night before
-                   - HRV levels
-                   - Stress levels
-                   - Training load from previous days
-                
-                4. Identify the optimal conditions for performance
-                
-                Provide specific recommendations based on this analysis.
+                Week-over-week performance comparison + recovery assessment.
+
+                PERFORMANCE:
+                1. Key metrics this week vs last week (averages + ranges)
+                2. Best/worst days and what made them different
+                3. ACWR and training load analysis
+
+                RECOVERY:
+                1. Find 2-3 hardest days (by training_load or bb_drained)
+                2. Analyze next-day response for each (HRV, RHR, BB, sleep)
+                3. Overtraining checklist (RHR up? HRV down? Sleep worse?)
+                4. Recovery speed assessment
                 """,
-                agent=self.performance_optimizer,
-                expected_output="Analysis of peak vs poor performance with specific recommendations"
+                agent=self.performance_recovery,
+                expected_output="Week-over-week table + recovery bounce-back analysis"
             ),
-            
+
             Task(
                 description=f"""
-                Assess recovery status and make recommendations.
-                
-                Analyze:
-                1. Current recovery metrics:
-                   - HRV trend (improving or declining?)
-                   - Sleep quality (consistent or erratic?)
-                   - Body battery patterns
-                   - Resting HR trends
-                
-                2. Training load balance:
-                   - Is acute load too high relative to chronic load?
-                   - Are rest days adequate?
-                   - Signs of accumulated fatigue?
-                
-                3. Recovery recommendations:
-                   - Need more rest days?
-                   - Specific recovery protocols?
-                   - Training intensity adjustments?
+                Sleep architecture deep-dive + lifestyle-to-outcome connections.
+
+                SLEEP:
+                1. Architecture breakdown per night (deep/REM/light as %%)
+                2. Consistency (CV for sleep_score and duration)
+                3. Next-day impact per night
+                4. Flag suspect data (score<40, rem=0)
+
+                LIFESTYLE:
+                1. Query activities table for this period
+                2. Build day stories: activity -> next-day biometric response
+                3. Classify activities properly (commute vs training)
+                4. What data is NOT available (caffeine, alcohol, etc.)
                 """,
-                agent=self.recovery_specialist,
-                expected_output="Recovery assessment with actionable recommendations"
+                agent=self.sleep_lifestyle,
+                expected_output="Sleep architecture + lifestyle impact analysis"
             ),
-            
+
             Task(
                 description=f"""
-                Connect lifestyle choices to health outcomes.
-                
-                If daily questionnaire data is available, analyze:
-                1. Caffeine impact on sleep
-                2. Alcohol impact on HRV
-                3. Reported stress vs measured stress
-                4. Workout feeling vs actual readiness
-                
-                Find which lifestyle factors have the biggest impact.
-                Recommend specific changes that would improve outcomes.
+                Synthesize all findings into the #1 bottleneck and top 3 quick wins.
+
+                1. Fact-check previous agents
+                2. Identify bottleneck with strongest evidence
+                3. Quick wins with specific metrics and confidence levels
+                4. What's already working well
+                5. Honest limitations
                 """,
-                agent=self.lifestyle_analyst,
-                expected_output="Lifestyle impact analysis with specific behavior recommendations"
-            ),
-            
-            Task(
-                description=f"""
-                Identify trends and forecast future direction.
-                
-                For each key metric, determine:
-                1. Is it trending up, down, or stable?
-                2. Is the trend accelerating or slowing?
-                3. What's likely to happen if trends continue?
-                4. Any early warning signs of problems?
-                
-                Focus on:
-                - Fitness trends (VO2 max, training load adaptation)
-                - Recovery trends (HRV, sleep quality over time)
-                - Stress trends (accumulation or improvement)
-                
-                Provide forward-looking guidance.
-                """,
-                agent=self.trend_forecaster,
-                expected_output="Trend analysis with predictions and early warnings"
-            ),
-            
-            Task(
-                description=f"""
-                Identify the biggest weaknesses and opportunities.
-                
-                Find:
-                1. What's the limiting factor?
-                   - Is it sleep quality?
-                   - Is it accumulated stress?
-                   - Is it inadequate recovery?
-                   - Is it training consistency?
-                
-                2. What would have the biggest impact if improved?
-                
-                3. Prioritize recommendations:
-                   - Quick wins (can improve immediately)
-                   - Medium-term improvements (2-4 weeks)
-                   - Long-term developments (1-3 months)
-                
-                Be specific and prioritized.
-                """,
-                agent=self.weakness_identifier,
-                expected_output="Prioritized list of weaknesses and improvement opportunities"
+                agent=self.synthesizer,
+                expected_output="Prioritized bottleneck + evidence-based quick wins"
             )
         ]
-        
+
         return tasks
-    
+
     def create_weekly_summary_tasks(self, matrix_context: str = "",
                                      comparison_context: str = "") -> List[Task]:
         """Create tasks for weekly summary report.
@@ -584,10 +433,9 @@ class AdvancedHealthAgents:
         If comparison_context is provided, the Matrix Comparator agent
         receives week-over-week comparison data.
 
-        Uses 9 agents: matrix_analyst, matrix_comparator,
-        pattern_detective, performance_optimizer, recovery_specialist,
-        trend_forecaster, lifestyle_analyst, sleep_analyst,
-        weakness_identifier."""
+        Uses 5 consolidated agents: statistical_interpreter,
+        health_pattern_analyst, performance_recovery,
+        sleep_lifestyle, synthesizer."""
 
         corr_block = ""
         if matrix_context:
@@ -701,378 +549,133 @@ class AdvancedHealthAgents:
         return [
             Task(
                 description=f"""
-                You are given a full pre-computed correlation analysis.
-                Your job is to interpret EVERY section of it ג€” skip NOTHING.
+                You are given pre-computed correlation analysis AND optionally
+                multi-window comparison data. Your job is to interpret ALL of it.
 
-                Go through each section in order and for each one report:
-                - SECTION NAME
-                - KEY FINDINGS (the 2-3 most important numbers)
-                - SAMPLE SIZE & CONFIDENCE
-                - WHAT IT MEANS IN PLAIN LANGUAGE
-
-                MANDATORY SECTIONS (you must cover ALL of these):
+                PART 1 — SINGLE-WINDOW (cover ALL 10 sections):
                 1. Training Intensity Classification
-                2. Same-Day Correlations (top 5 most meaningful pairs)
-                3. Next-Day Predictors (top 5 ג€” these show causality)
-                4. Autoregressive Persistence (which metrics persist day-to-day)
-                5. Distributions (normal vs skewed ג€” affects which stats are valid)
-                6. Recent Anomalies (what's unusual in the last 3 days)
-                7. Conditioned AR(1) ג€” THIS IS THE MOST IMPORTANT SECTION.
-                   For each model listed, explain:
-                   - What variables predict what
-                   - The Rֲ² and how much it improves over simple persistence
-                   - What this means practically
-                   - Sample size and whether it's reliable
-                8. Markov State Transitions (state stickiness + sample sizes)
-                9. KL-Divergence (which conditions shift predictions)
-                10. Metric Ranges (current baselines and context)
+                2. Same-Day Correlations (top 5 pairs)
+                3. Next-Day Predictors (top 5)
+                4. Autoregressive Persistence
+                5. Distributions (normal vs skewed)
+                6. Recent Anomalies (last 3 days z-scores)
+                7. Conditioned AR(1) — MOST IMPORTANT: R² improvements
+                8. Markov State Transitions (+ sample sizes)
+                9. KL-Divergence
+                10. Metric Ranges
 
-                DO NOT give advice or recommendations.
-                DO NOT query the database.
-                ONLY interpret the numbers.
+                PART 2 — CROSS-TIMEFRAME (if comparison data available):
+                Track key findings across ALL windows (7d to 365d).
+                Classify: ROBUST / STABLE / EMERGING / SPARSE.
+                Show tables: | Metric Pair | 7d r | 14d r | 30d r | Verdict |
+
+                DO NOT give advice. ONLY interpret numbers.
                 {ctx}
-                """,
-                agent=self.matrix_analyst,
-                expected_output="Section-by-section interpretation of the full correlation matrix with confidence ratings"
-            ),
-
-            Task(
-                description=f"""
-                Perform a CROSS-TIMEFRAME STABILITY ANALYSIS using the
-                benchmark comparison data below. You have full correlation
-                matrices for EVERY available time window (the number of
-                windows depends on how much data exists ג€” could be 2-9
-                windows ranging from 7 days to 365 days).
-
                 {comparison_block}
-
-                REQUIRED SECTIONS:
-
-                1. CORRELATION EVOLUTION: For the top Pearson pairs, track
-                   r values across ALL available windows (7d, 14d, 21d, 30d, etc).
-                   Show them in a table:
-                   | Metric Pair | 7d r | 14d r | 21d r | 30d r | Verdict |
-                   Classify: ROBUST, STABLE, EMERGING, WEAKENING, SPARSE.
-
-                2. PREDICTOR STABILITY: Same for next-day predictors.
-                   Track r and n across windows. Rising n + stable r = reliable.
-
-                3. PERSISTENCE EVOLUTION: AR(1) Rֲ² across windows.
-                   | Metric | 7d Rֲ² | 14d Rֲ² | 21d Rֲ² | 30d Rֲ² | Verdict |
-
-                4. MARKOV & KL MATURATION: Note which window first produces
-                   Markov/KL results. Below 20 transitions = PRELIMINARY.
-                   Are KL findings consistent once they appear?
-
-                5. METRIC RANGES ACROSS WINDOWS: For key metrics, show how
-                   mean and std change as the window grows. Recent-window
-                   means that differ from long-window means indicate trends.
-
-                6. CONFIDENCE SUMMARY: For every major finding, assign:
-                   ROBUST / STABLE / EMERGING / LONGER-WINDOW-ONLY / SPARSE
-
-                If a window has too few data points for a section, say
-                'DATA SPARSITY' ג€” don't say the pattern 'disappeared'.
-                {ctx}
                 """,
-                agent=self.matrix_comparator,
-                expected_output="Cross-timeframe stability analysis with per-window numbers and confidence tiers"
+                agent=self.statistical_interpreter,
+                expected_output="Full statistical interpretation with cross-timeframe stability"
             ),
 
             Task(
                 description=f"""
-                Find 3-5 non-obvious patterns in this week's data.
-                The Matrix Analyst has already interpreted the correlation
-                tables ג€” do NOT repeat that analysis. Focus on DAY-BY-DAY
-                patterns in the actual data that go BEYOND what correlations show.
+                Find 3-5 non-obvious patterns AND rigorously assess trends.
+                The Statistical Interpreter has covered the correlation tables —
+                focus on DAY-BY-DAY patterns that go BEYOND what correlations show.
 
-                REQUIRED STEPS:
-                1. First, query the day-by-day values for this week:
-                   SELECT date, resting_hr, hrv_last_night, sleep_score,
-                   stress_level, training_readiness, bb_charged, bb_drained,
-                   total_steps, rem_sleep_sec, deep_sleep_sec, acwr,
-                   daily_load_acute, daily_load_chronic
-                   FROM daily_metrics WHERE date >= CURRENT_DATE - INTERVAL '7 days'
-                   ORDER BY date
+                PATTERNS:
+                1. Query day-by-day values for this week
+                2. FLAG suspect data (rem=0, score<40, outliers >2σ)
+                3. Analyze DAY PAIRS (day X → day X+1 responses)
+                4. Verify pre-computed correlations against actual data
 
-                2. FLAG any suspect data: rem_sleep=0, sleep_score<40, or
-                   any metric that's a clear outlier (>2ֿƒ from the week's mean).
-                   Mark these as SUSPECT and note how they affect averages.
+                TRENDS — for HRV, RHR, sleep_score, stress, readiness, ACWR:
+                1. List daily values for last 7 days
+                2. Compute mean, std, CV
+                3. Directional trend? (3+ consecutive days)
+                4. Survives outlier removal?
+                5. Verdict per metric
 
-                3. Look at DAY PAIRS (what happened on day X ג†’ day X+1):
-                   - After the hardest training day, did recovery metrics
-                     bounce back the next day? How quickly?
-                   - After the worst sleep night, what happened to stress
-                     and readiness the next day?
-
-                4. Examine the pre-computed correlations, but VERIFY each one
-                   by checking the n (sample size) and whether the actual
-                   day-by-day data supports the claimed relationship.
-
-                5. Report each pattern as:
-                   PATTERN: [name]
-                   EVIDENCE: [specific days and numbers]
-                   SAMPLE SIZE: n=[number]
-                   CONFIDENCE: [HIGH if n>=20, PRELIMINARY if n<20, SUSPECT if data quality issues]
-                   SO WHAT: [what this means for the user in plain language]
+                Report as: FINDING / EVIDENCE / SAMPLE SIZE / CONFIDENCE / VERDICT
                 {ctx}
                 """,
-                agent=self.pattern_detective,
-                expected_output="3-5 patterns with day-by-day evidence and confidence ratings"
+                agent=self.health_pattern_analyst,
+                expected_output="3-5 patterns + per-metric trend table with confidence"
             ),
 
             Task(
                 description=f"""
-                Create a week-over-week performance comparison.
+                Week-over-week performance comparison + recovery assessment.
 
-                REQUIRED FORMAT ג€” for each metric, report:
-                | Metric | Last Week | This Week | Change | Verdict |
+                PERFORMANCE:
+                1. Query both weeks daily values (14 days)
+                2. Per metric: raw averages, outlier-adjusted, range, verdict
+                   (IMPROVED >10%% / STABLE <10%% / DECLINED >10%% / VOLATILE)
+                3. Best and worst day this week — what made them different
+                4. ACWR + training load analysis
+                5. Activities summary: workouts, types, total load
 
-                REQUIRED STEPS:
-                1. Query both weeks' daily values (not just averages):
-                   SELECT date, resting_hr, hrv_last_night, sleep_score,
-                   stress_level, training_readiness, bb_charged, bb_drained, total_steps
-                   FROM daily_metrics
-                   WHERE date >= CURRENT_DATE - INTERVAL '14 days'
-                   ORDER BY date
-
-                2. For each metric, report:
-                   - Raw averages for both weeks
-                   - If any day is a clear outlier (>2ֿƒ), compute the average
-                     WITH and WITHOUT that day. Show both.
-                   - Day range (min-max) for this week to show variability
-                   - Verdict: IMPROVED (>10%% better), STABLE (<10%% change),
-                     DECLINED (>10%% worse), or VOLATILE (high variance,
-                     trend unclear)
-
-                3. Highlight the BEST single day and WORST single day this week.
-                   What made them different?
-
-                4. ACWR and training load analysis:
-                   - What is the current ACWR? Where does it fall
-                     (optimal/detraining/injury risk)?
-                   - Show how daily_load_acute and daily_load_chronic
-                     are trending.
-
-                5. Activities summary: how many workouts, what types,
-                   total training load this week vs last.
+                RECOVERY:
+                1. Find 2-3 hardest days (training_load or bb_drained)
+                2. Next-day response for each hard day with specific numbers
+                3. Overtraining checklist (5 criteria, yes/no with evidence)
+                4. Recovery speed: Fast / Moderate / Slow
+                5. Intensity recommendation with reasoning
                 {ctx}
                 """,
-                agent=self.performance_optimizer,
-                expected_output="Week-over-week table with outlier-adjusted averages and variability analysis"
+                agent=self.performance_recovery,
+                expected_output="Week-over-week table + bounce-back analysis + overtraining checklist"
             ),
 
             Task(
                 description=f"""
-                Assess recovery capacity ג€” not just current state,
-                but HOW WELL the body recovers from hard efforts.
+                SLEEP deep-dive + LIFESTYLE connections for this week.
 
-                REQUIRED STEPS:
-                1. Identify the 2-3 hardest days this week (by training_load
-                   from activities table or bb_drained from daily_metrics).
+                SLEEP:
+                1. Query 7 days of sleep data
+                2. Architecture table per night: Score | Total | Deep%% | REM%% | Light%% | Resp | BB Change
+                3. Flag suspect nights, compute averages with/without
+                4. Consistency: CV for score and duration
+                5. Next-day impact mapping per night
+                6. Week-over-week sleep comparison (query last week too)
+                7. Top sleep insight
 
-                2. For each hard day, analyze the NEXT-DAY response:
-                   - Did HRV go up or down?
-                   - Did resting HR go up or down?
-                   - Did bb_charged recover?
-                   - How was the sleep_score?
-                   Format: "Feb X (HARD): bb_drained=Y ג†’ Feb X+1: HRV=Z (+/-),
-                   RHR=W (+/-), bb_charged=V"
-
-                3. OVERTRAINING CHECKLIST (answer each yes/no with evidence):
-                   ג–¡ Is resting HR trending upward over 5+ consecutive days?
-                   ג–¡ Is HRV trending downward over 5+ consecutive days?
-                   ג–¡ Is sleep quality declining over 5+ consecutive days?
-                   ג–¡ Is the user reporting higher stress levels consistently?
-                   ג–¡ Is ACWR > 1.5?
-                   Overtraining requires YES on 3+ of these. Otherwise, NOT overtraining.
-
-                4. Based on the bounce-back analysis, what is the user's
-                   recovery SPEED? Fast (<24h to normalize), moderate (24-48h),
-                   or slow (>48h)?
-
-                5. Intensity recommendation with SPECIFIC reasoning.
+                LIFESTYLE:
+                1. Query activities for this week
+                2. Day stories: "Feb X: [activity] → Feb X+1: [biometrics]"
+                3. Classify activities (commute vs training)
+                4. ACWR trajectory with daily values
+                5. KL-divergence: which conditions shift outcomes?
+                6. State clearly what data you DON'T have
                 {ctx}
                 """,
-                agent=self.recovery_specialist,
-                expected_output="Bounce-back analysis for each hard day + overtraining checklist + recovery speed assessment"
+                agent=self.sleep_lifestyle,
+                expected_output="Sleep architecture + day-by-day lifestyle stories"
             ),
 
             Task(
                 description=f"""
-                Analyze trends RIGOROUSLY ג€” only report trends that survive scrutiny.
+                Synthesize all previous findings into #1 bottleneck + top 3 quick wins.
 
-                REQUIRED STEPS:
-                For each of these metrics: HRV, resting HR, sleep_score,
-                stress_level, training_readiness, ACWR:
-
-                1. List the daily values for the last 7 days in a row.
-                2. Compute: mean, std, coefficient of variation (CV = std/mean).
-                3. Is there a DIRECTIONAL trend (3+ consecutive days moving
-                   in the same direction)? Or is it oscillating?
-                4. OUTLIER TEST: remove the single highest and lowest values.
-                   Does the "trend" still hold? If not, it's variability.
-                5. Markov transition relevance: cite the transition probabilities
-                   BUT note the sample size (number of transitions observed).
-                   If <10 transitions, call it unreliable.
-
-                REPORT FORMAT per metric:
-                   [METRIC_NAME]
-                   Values: [day1, day2, ... day7]
-                   Mean: X, Std: Y, CV: Z%%
-                   Directional trend: YES (direction) / NO (oscillating)
-                   Survives outlier removal: YES / NO
-                   Verdict: IMPROVING / DECLINING / STABLE / VOLATILE
-
-                Finally, list the TOP 2 EARLY WARNINGS (things that could
-                worsen if unchecked) and TOP 2 POSITIVE SIGNALS.
-                {ctx}
-                """,
-                agent=self.trend_forecaster,
-                expected_output="Per-metric trend table with CV, outlier test, and directional analysis"
-            ),
-
-            Task(
-                description=f"""
-                Connect specific activities and behaviors to next-day outcomes.
-
-                REQUIRED STEPS:
-                1. Query this week's activities:
-                   SELECT date, activity_type, sport_type,
-                   duration_sec, average_hr, max_hr, training_load
-                   FROM activities WHERE date >= CURRENT_DATE - INTERVAL '7 days'
-                   ORDER BY date
-
-                2. For each training day, build a DAY STORY:
-                   "Feb X: [what they did] ג†’ Feb X+1: [how body responded]"
-                   Include specific numbers for HRV, RHR, sleep_score, stress, BB.
-
-                3. Classify activities properly:
-                   - Short cycling (5-10 min, low HR) = commute, not training
-                   - Running 30+ min at HR>150 = hard cardio
-                   - Strength 60+ min = hard resistance
-                   - Walking = active recovery
-                   Don't treat a 7-min bike commute as a "cycling workout."
-
-                4. ACWR trajectory: show the daily ACWR values and explain
-                   what the trend means (ramping up? pulling back? stable?).
-
-                5. Use KL-divergence findings to answer: which CONDITIONS
-                   (e.g., high steps, low stress) actually SHIFT the
-                   probability of good outcomes? Cite the specific KL values
-                   and what they mean.
-
-                6. State clearly what data you DON'T have (time-of-day,
-                   nutrition, caffeine, alcohol) and don't speculate about it.
-                {ctx}
-                """,
-                agent=self.lifestyle_analyst,
-                expected_output="Day-by-day activity stories with next-day biometric responses"
-            ),
-
-            Task(
-                description=f"""
-                Perform a DEDICATED SLEEP ANALYSIS for this week.
-
-                REQUIRED STEPS:
-                1. Query sleep data for the last 7 days:
-                   SELECT date, sleep_score, sleep_seconds,
-                   deep_sleep_sec, rem_sleep_sec, light_sleep_sec,
-                   avg_respiration, body_battery_change,
-                   resting_hr_sleep
-                   FROM daily_metrics
-                   WHERE date >= CURRENT_DATE - INTERVAL '7 days'
-                   ORDER BY date
-
-                2. ARCHITECTURE TABLE ג€” for each night:
-                   | Date | Score | Total hrs | Deep min (%%) | REM min (%%) | Light min (%%) | Resp | BB Change |
-                   Flag any night with deep=0, REM=0, or score<40 as SUSPECT.
-
-                3. AVERAGES ג€” compute with and without suspect nights:
-                   - Mean sleep_score, total hours, deep%%, REM%%, light%%
-                   - Compare to norms: Deep 15-20%%, REM 20-25%%, Light 50-60%%
-                   - Is the user getting enough deep sleep? Enough REM?
-
-                4. CONSISTENCY:
-                   - CV (std/mean) for sleep_score and total sleep time
-                   - CV > 15%% = inconsistent ג€” this is a problem even if
-                     the average is fine. Report the spread (minג†’max).
-
-                5. NEXT-DAY IMPACT ג€” for each night, show:
-                   "Night of [date]: score=X, deep=Y min ג†’
-                    Next day: HRV=A, stress=B, readiness=C"
-                   Which sleep metric is the BEST predictor of next-day
-                   readiness? Is it total time, deep%%, REM%%, or score?
-
-                6. BODY BATTERY RECHARGE:
-                   - body_battery_change during sleep ג€” how much energy
-                     was recovered? Does it correlate with sleep quality?
-                   - Nights with low BB recharge despite decent sleep_score
-                     suggest other factors (stress, late meals, timing).
-
-                7. RESPIRATION: any nights with avg_respiration > 16?
-                   Elevated respiratory rate during sleep can indicate
-                   illness, nasal congestion, or poor sleep environment.
-
-                8. Use any sleep-related Markov/KL findings from the
-                   correlation matrix to answer: what CONDITIONS lead to
-                   good vs poor sleep? (e.g., high steps, low stress,
-                   specific training patterns)
-
-                9. WEEK-OVER-WEEK: Query last week's sleep for comparison:
-                   SELECT date, sleep_score, sleep_seconds, deep_sleep_sec,
-                   rem_sleep_sec FROM daily_metrics
-                   WHERE date >= CURRENT_DATE - INTERVAL '14 days'
-                   AND date < CURRENT_DATE - INTERVAL '7 days'
-                   ORDER BY date
-                   Compare this week vs last week averages.
-
-                10. TOP INSIGHT: What is the single most important sleep
-                    finding this week? Support with specific numbers.
-                {ctx}
-                """,
-                agent=self.sleep_analyst,
-                expected_output="Sleep architecture table + consistency analysis + next-day impact mapping + week-over-week comparison"
-            ),
-
-            Task(
-                description=f"""
-                Synthesize all previous findings into the #1 bottleneck
-                and top 3 actionable quick wins.
-
-                REQUIRED STEPS:
-                1. FACT-CHECK previous agents: Did they flag outliers?
-                   Did they note sample sizes? Did they conflate metrics?
-                   If any agent made an error, correct it here.
-
-                2. BOTTLENECK IDENTIFICATION:
-                   - List the top 3 candidate bottlenecks with supporting data.
-                   - For each, assess: is the data STRONG (n>=20, consistent
-                     daily pattern) or WEAK (n<20, outlier-driven, volatile)?
-                   - Pick the one with the strongest evidence.
-                   - If the data is too sparse to confidently pick a bottleneck,
-                     say so. "Insufficient data to determine" is a valid answer.
-
-                3. QUICK WINS ג€” each must have:
-                   - THE SPECIFIC metric you expect to improve
-                   - THE EVIDENCE (correlation value, day-pair example,
-                     KL-divergence shift) that supports this action
-                   - THE CONFIDENCE LEVEL (high/medium/low based on n)
-                   - HOW to verify it worked (what to look for next week)
-
-                4. WHAT'S ALREADY WORKING: name 2-3 things going well
-                   that should be continued. Not everything is broken.
-
+                1. FACT-CHECK: Did previous agents flag outliers? Note sample sizes?
+                   Conflate metrics? Correct any errors.
+                2. BOTTLENECK: Top 3 candidates with supporting data.
+                   Assess evidence strength (n>=20 consistent vs n<20 outlier-driven).
+                   Pick the one with strongest evidence (or say "insufficient data").
+                3. QUICK WINS — each must have:
+                   - Specific metric expected to improve
+                   - Evidence (correlation, day-pair, KL shift)
+                   - Confidence level (high/medium/low)
+                   - How to verify next week
+                4. WHAT'S WORKING: 2-3 positive things to continue
                 5. HONEST LIMITATIONS: what can't we determine yet?
-                   (too few days of data, missing VO2max history,
-                   no nutrition data, etc.)
                 {ctx}
                 """,
-                agent=self.weakness_identifier,
-                expected_output="Fact-checked synthesis with confidence-rated bottleneck + evidence-based quick wins + honest limitations"
+                agent=self.synthesizer,
+                expected_output="Fact-checked synthesis with bottleneck + quick wins + limitations"
             ),
         ]
-    
+
     def create_goal_progress_tasks(self, goal_description: str) -> List[Task]:
         """Create tasks for tracking progress toward specific goals"""
         
@@ -1090,7 +693,7 @@ class AdvancedHealthAgents:
                 
                 Provide specific progress update with data.
                 """,
-                agent=self.performance_optimizer,
+                agent=self.performance_recovery,
                 expected_output="Goal progress report with specific metrics"
             ),
             
@@ -1101,7 +704,7 @@ class AdvancedHealthAgents:
                 Recommend specific actions for the next 2 weeks to accelerate progress.
                 Be concrete and measurable.
                 """,
-                agent=self.weakness_identifier,
+                agent=self.synthesizer,
                 expected_output="2-week action plan for goal achievement"
             )
         ]
@@ -1118,12 +721,10 @@ class AdvancedHealthAgents:
         
         crew = Crew(
             agents=[
-                self.pattern_detective,
-                self.performance_optimizer,
-                self.recovery_specialist,
-                self.lifestyle_analyst,
-                self.trend_forecaster,
-                self.weakness_identifier
+                self.health_pattern_analyst,
+                self.performance_recovery,
+                self.sleep_lifestyle,
+                self.synthesizer,
             ],
             tasks=tasks,
             process=Process.sequential,
@@ -1144,7 +745,7 @@ class AdvancedHealthAgents:
         Returns the COMBINED output from all 8 agents, not just the last one.
         """
 
-        log.info("\n  Generating Weekly Summary (9 agents)ג€¦\n")
+        log.info("\n  Generating Weekly Summary (5 agents)ג€¦\n")
 
         tasks = self.create_weekly_summary_tasks(
             matrix_context=matrix_context,
@@ -1152,28 +753,20 @@ class AdvancedHealthAgents:
         )
 
         agent_labels = [
-            "CORRELATION MATRIX INTERPRETATION (Matrix Analyst)",
-            "CROSS-TIMEFRAME STABILITY (Benchmark Analyst)",
-            "HIDDEN PATTERNS (Pattern Detective)",
-            "PERFORMANCE SUMMARY (Performance Optimizer)",
-            "RECOVERY ASSESSMENT (Recovery Specialist)",
-            "TRENDS & FORECASTS (Trend Forecaster)",
-            "LIFESTYLE CONNECTIONS (Lifestyle Analyst)",
-            "SLEEP ANALYSIS (Sleep Analyst)",
-            "BOTTLENECK & QUICK WINS (Weakness Identifier)",
+            "STATISTICAL INTERPRETATION (Interpreter)",
+            "PATTERNS & TRENDS (Pattern Analyst)",
+            "PERFORMANCE & RECOVERY (Performance/Recovery)",
+            "SLEEP & LIFESTYLE (Sleep/Lifestyle)",
+            "BOTTLENECK & QUICK WINS (Synthesizer)",
         ]
 
         crew = Crew(
             agents=[
-                self.matrix_analyst,
-                self.matrix_comparator,
-                self.pattern_detective,
-                self.performance_optimizer,
-                self.recovery_specialist,
-                self.trend_forecaster,
-                self.lifestyle_analyst,
-                self.sleep_analyst,
-                self.weakness_identifier,
+                self.statistical_interpreter,
+                self.health_pattern_analyst,
+                self.performance_recovery,
+                self.sleep_lifestyle,
+                self.synthesizer,
             ],
             tasks=tasks,
             process=Process.sequential,
@@ -1204,7 +797,7 @@ class AdvancedHealthAgents:
         tasks = self.create_goal_progress_tasks(goal)
         
         crew = Crew(
-            agents=[self.performance_optimizer, self.weakness_identifier],
+            agents=[self.performance_recovery, self.synthesizer],
             tasks=tasks,
             process=Process.sequential,
             verbose=True
