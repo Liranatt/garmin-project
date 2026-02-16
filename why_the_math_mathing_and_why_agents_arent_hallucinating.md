@@ -548,6 +548,27 @@ This architecture ensures that no single entity has enough "creative license" to
 
 ---
 
+### 7. Weekly Email Notification Pipeline
+
+After the agents finish their analysis and the Synthesizer produces structured recommendations, the pipeline sends a **formatted HTML email** with the week's actionable insights. This closes the user-facing feedback loop: the math engine computes → agents interpret → you receive the results in your inbox every Sunday.
+
+**How it works** (`email_notifier.py`):
+
+1. **Extract:** Scans the combined agent output for `RECOMMENDATION:` / `TARGET_METRIC:` / `EXPECTED_DIRECTION:` blocks (same parsing logic as the DB persistence).
+2. **Format:** Builds a dark-themed HTML email with:
+   - Individual recommendation cards with color-coded badges (IMPROVE / DECLINE / STABLE)
+   - The Synthesizer's full analysis section (bottleneck + quick wins)
+   - A plain-text fallback for email clients that don't render HTML
+3. **Send:** Uses Gmail SMTP with App Password authentication via `smtplib`.
+4. **Degrade gracefully:** If `EMAIL_APP_PASSWORD` is not set, the pipeline runs normally — email is skipped with a log warning, not an error.
+
+**Integration:** Called by `WeeklySyncPipeline._send_email()` in `weekly_sync.py` as Step 5 of the pipeline. Also runs in GitHub Actions with secrets `EMAIL_APP_PASSWORD` and `EMAIL_RECIPIENT`.
+
+> [!NOTE]
+> The email is a **delivery mechanism**, not an analysis layer. It reformats existing agent output — it does not compute, interpret, or modify any findings.
+
+---
+
 ## References
 
 | Source | Used for | Where in code |

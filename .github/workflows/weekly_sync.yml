@@ -32,6 +32,8 @@ jobs:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
           GARTH_HOME: ~/.garth
         working-directory: src
         run: python weekly_sync.py --days 7
