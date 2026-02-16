@@ -1,6 +1,7 @@
 import re
 import subprocess
 import os
+import sys
 
 def copy_english_post():
     file_path = r"C:\Users\Liran\.gemini\antigravity\brain\31980a2e-98d9-438e-b271-c7dda1e5b53b\linkedin_post.md"
@@ -13,8 +14,8 @@ def copy_english_post():
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
             
-        # Extract English post section - Robust Regex
-        # Matches "## 🇺🇸 English Post" followed by anything until the first code block
+        # Extract English post section - Robust Regex for Authentic Post
+        # Matches "## 🇺🇸 English Post" followed by any title text, then captures the code block
         pattern = r"## 🇺🇸 English Post.*?\n\s*```(.*?)```"
         match = re.search(pattern, content, re.DOTALL)
         
@@ -29,8 +30,10 @@ def copy_english_post():
             print("-" * 50)
         else:
             print("Could not find English post section in file.")
-            print("Debug: Content preview:")
-            print(content[:500])
+            print("Available headers:")
+            headers = re.findall(r"^## (.*)$", content, re.MULTILINE)
+            for h in headers:
+                print(f" - {h}")
             
     except Exception as e:
         print(f"Error: {e}")

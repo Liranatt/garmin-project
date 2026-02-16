@@ -26,11 +26,11 @@ Instead of relying on generic algorithms, this system uses custom-built mathemat
 
 ## 🏗️ System Architecture
 
-The project operates as a fully automated weekly pipeline (runs every Sunday via GitHub Actions):
+The project operates as a fully automated daily pipeline (runs every morning via GitHub Actions):
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                    WEEKLY PIPELINE (GitHub Actions)                  │
+│                     DAILY PIPELINE (GitHub Actions)                  │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  Step 1: FETCH         Garmin Connect API → PostgreSQL (upserts)     │
@@ -38,7 +38,7 @@ The project operates as a fully automated weekly pipeline (runs every Sunday via
 │  Step 3: COMPUTE       Correlation Engine (13 statistical layers)    │
 │  Step 4: ANALYZE       5 AI Agents interpret the math (CrewAI)       │
 │  Step 5: SAVE          Insights → DB + Recommendations → Memory      │
-│  Step 6: EMAIL         Weekly recommendations → your inbox 📧        │
+│  Step 6: EMAIL         Daily recommendations → your inbox 📧          │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -53,7 +53,7 @@ The project operates as a fully automated weekly pipeline (runs every Sunday via
 | **Dashboard** | `src/dashboard.py` | Streamlit UI for exploring data interactively |
 | **Pipeline** | `src/weekly_sync.py` | Orchestrates the weekly pipeline end-to-end |
 | **Email Reminder** | `src/send_export_reminder.py` | Sends a weekly reminder to export Garmin data |
-| **Email** | `src/email_notifier.py` | Sends HTML email with weekly recommendations |
+| **Email** | `src/email_notifier.py` | Sends HTML email with daily recommendations |
 | **Schema** | `src/enhanced_schema.py` | Database table definitions |
 
 > [!TIP]

@@ -1,4 +1,4 @@
-name: Weekly Health Sync
+name: Daily Health Sync
 on:
   schedule:
     - cron: '0 6 * * *'  # Every Day 06:00 UTC
@@ -36,7 +36,7 @@ jobs:
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
           GARTH_HOME: ~/.garth
         working-directory: src
-        run: python weekly_sync.py --days 7
+        run: python weekly_sync.py --days 2
 
       - name: Save garth session
         if: always()

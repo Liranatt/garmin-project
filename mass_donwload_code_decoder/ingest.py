@@ -730,8 +730,44 @@ def ingest_fit_files(cur):
 
         for fp in fit_files:
             try:
-                fitfile = fitparse.FitFile(str(fp))
-                messages = list(fitfile.get_messages())
+                fitfile = fitparse.FitFile(str(fp), check_crc=False)
+                messages = []
+                early_exit = False
+                
+                # Iterate messages lazily to check date ASAP
+                for m in fitfile.get_messages():
+                    messages.append(m)
+                    
+                    # Check 'file_id' or 'session' for timestamp
+                    if m.name == 'file_id' or m.name == 'session':
+                        # Try to find a timestamp/start_time field
+                        ts = None
+                        if m.name == 'file_id':
+                            # time_created
+                            for f in m.fields:
+                                if f.name == 'time_created' and f.value:
+                                    ts = f.value
+                                    break
+                        elif m.name == 'session':
+                            # start_time
+                            for f in m.fields:
+                                if f.name == 'start_time' and f.value:
+                                    ts = f.value
+                                    break
+                        
+                        if ts:
+                            # Verify date
+                            dt = parse_date(ts)
+                            # timestamp might be int or datetime
+                            if not after_cutoff(dt):
+                                # Too old! Stop parsing this file.
+                                early_exit = True
+                                break
+                
+                if early_exit:
+                    skipped += 1
+                    continue
+                    
             except Exception:
                 skipped += 1
                 continue
@@ -745,26 +781,10 @@ def ingest_fit_files(cur):
                 except ValueError:
                     pass
 
-            # Check session date to filter
+            # Prepare sessions list for insertion
             sessions = [m for m in messages if m.name == "session"]
-            if sessions:
-                # Get earliest session start_time
-                start_times = []
-                for s in sessions:
-                    for f in s.fields:
-                        if f.name == "start_time" and f.value:
-                            start_times.append(f.value)
-                if start_times:
-                    earliest = min(start_times)
-                    if hasattr(earliest, 'date'):
-                        session_date = earliest.date() if callable(earliest.date) else earliest.date
-                    else:
-                        session_date = parse_date(str(earliest))
-                    if session_date and not after_cutoff(session_date):
-                        skipped += 1
-                        continue
-
-            fit_name = fp.name
+            
+            # Continue with insertion...
             total_files += 1
 
             # --- Sessions ---
