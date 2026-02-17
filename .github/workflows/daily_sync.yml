@@ -32,7 +32,7 @@ jobs:
 
       - name: Run weekly sync
         env:
-          POSTGRES_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
+          POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
