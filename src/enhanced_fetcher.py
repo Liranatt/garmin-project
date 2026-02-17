@@ -152,6 +152,13 @@ class EnhancedGarminDataFetcher:
         self.conn_str = os.getenv("POSTGRES_CONNECTION_STRING", "")
         self.authenticated = False
 
+        if not self.conn_str:
+            log.error("❌ CRITICAL: POSTGRES_CONNECTION_STRING is missing or empty.")
+            log.error("   - If running locally, check your .env file.")
+            log.error("   - If in GitHub Actions, check if 'DATABASE_URL' secret is set and mapped in workflow.")
+            # We don't raise immediately to allow unit tests to instantiate, 
+            # but fetch_and_store will fail fast.
+
     # ─── Authentication ────────────────────────────────────────
 
     # ─── Authentication ────────────────────────────────────────
@@ -305,7 +312,10 @@ class EnhancedGarminDataFetcher:
         bb_events_data = raw.get("body_battery")
 
         # 6. Write to PostgreSQL
-        conn = psycopg2.connect(self.conn_str)
+        if not self.conn_str:
+             raise RuntimeError("❌ Cannot connect to DB: POSTGRES_CONNECTION_STRING is missing.")
+
+        conn = psycopg2.connect(self.conn_str, sslmode="require")
         conn.autocommit = True
         cur = conn.cursor()
 
