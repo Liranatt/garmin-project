@@ -89,4 +89,9 @@ agent_output*.txt
 *.json
 *.fit
 *.zip
+*.zip
 *.csv
+
+# Ignore local test scripts with potential hardcoded creds
+scripts/test_*.py
+tests/verify_*.py
