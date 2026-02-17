@@ -229,10 +229,10 @@ class CorrelationEngine:
     # ─── Raw computation (no storage) ─────────────────────────
 
     def _compute_raw(self, training_days: Optional[Dict] = None,
-                     date_start=None, date_end=None) -> str:
+                      date_start=None, date_end=None) -> str:
         """Run layers 0-3 for a date range and return the summary string."""
         df, metrics = self._layer0_load_and_clean(date_start=date_start,
-                                                   date_end=date_end)
+                                                    date_end=date_end)
         if df is None or len(df) < 5:
             msg = "Not enough data for correlation analysis (need ≥ 5 days)."
             log.info(f"   ⚠️  {msg}")
@@ -243,16 +243,25 @@ class CorrelationEngine:
         if training_days:
             min_date = df["date"].min()
             max_date = df["date"].max()
+            
+            # --- תיקון: המרת Timestamp ל-date לצורך השוואה ---
+            if hasattr(min_date, 'date'): 
+                min_date = min_date.date()
+            if hasattr(max_date, 'date'): 
+                max_date = max_date.date()
+            # -------------------------------------------------
+
             td_filtered = {d: v for d, v in training_days.items()
                            if min_date <= d <= max_date}
+            
             df["training_hard_minutes"] = df["date"].apply(
-                lambda d: td_filtered.get(d, {}).get("hard_minutes", 0)
+                lambda d: td_filtered.get(d.date() if hasattr(d, 'date') else d, {}).get("hard_minutes", 0)
             )
             df["training_has_upper"] = df["date"].apply(
-                lambda d: 1 if td_filtered.get(d, {}).get("has_upper", False) else 0
+                lambda d: 1 if td_filtered.get(d.date() if hasattr(d, 'date') else d, {}).get("has_upper", False) else 0
             )
             df["training_has_lower"] = df["date"].apply(
-                lambda d: 1 if td_filtered.get(d, {}).get("has_lower", False) else 0
+                lambda d: 1 if td_filtered.get(d.date() if hasattr(d, 'date') else d, {}).get("has_lower", False) else 0
             )
             for tc in ["training_hard_minutes", "training_has_upper",
                        "training_has_lower"]:
@@ -314,7 +323,6 @@ class CorrelationEngine:
         )
 
         return summary
-
     # ─── Data range helper ─────────────────────────────────────
 
     def _get_data_range(self):
