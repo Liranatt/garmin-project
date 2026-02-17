@@ -28,6 +28,11 @@ import garth
 from datetime import date, timedelta, datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+import imaplib
+import email
+import re
+import html
+from email.header import decode_header
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 
@@ -149,9 +154,84 @@ class EnhancedGarminDataFetcher:
 
     # ─── Authentication ────────────────────────────────────────
 
+    # ─── Authentication ────────────────────────────────────────
+
+    def _get_mfa_code_from_email(self) -> Optional[str]:
+        """Attempt to retrieve Garmin MFA code from Gmail via IMAP."""
+        gmail_user = os.getenv("EMAIL_RECIPIENT") or os.getenv("GARMIN_EMAIL")
+        gmail_password = os.getenv("EMAIL_APP_PASSWORD")
+
+        if not gmail_user or not gmail_password:
+            log.warning("⚠️ Cannot attempt Auto-MFA: Missing EMAIL_APP_PASSWORD or EMAIL_RECIPIENT.")
+            return None
+
+        log.info(f"📧 Checking Gmail ({gmail_user}) for MFA code...")
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(gmail_user, gmail_password)
+            mail.select("inbox")
+
+            # Search for emails from Garmin
+            status, messages = mail.search(None, '(FROM "alerts@account.garmin.com")')
+            if status != "OK":
+                return None
+
+            email_ids = messages[0].split()
+            if not email_ids:
+                return None
+
+            # Check last 5 emails (newest first)
+            latest_ids = email_ids[-5:]
+            latest_ids.reverse()
+
+            for e_id in latest_ids:
+                _, msg_data = mail.fetch(e_id, "(RFC822)")
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
+                        
+                        # Extract body (prefer plain, fallback html)
+                        body, html_body = "", ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                ctype = part.get_content_type()
+                                if ctype == "text/plain":
+                                    body = part.get_payload(decode=True).decode(errors='ignore')
+                                elif ctype == "text/html":
+                                    html_body = part.get_payload(decode=True).decode(errors='ignore')
+                        else:
+                            ctype = msg.get_content_type()
+                            payload = msg.get_payload(decode=True).decode(errors='ignore')
+                            if ctype == "text/html": html_body = payload
+                            else: body = payload
+                        
+                        # Clean content
+                        content = body if body.strip() else html_body
+                        # Strip HTML
+                        content = re.sub(r'<script.*?>.*?</script>', ' ', content, flags=re.DOTALL|re.IGNORECASE)
+                        content = re.sub(r'<style.*?>.*?</style>', ' ', content, flags=re.DOTALL|re.IGNORECASE)
+                        content = re.sub(r'<[^>]+>', ' ', content)
+                        content = html.unescape(content)
+                        clean_body = re.sub(r'\s+', ' ', content).strip()
+
+                        # Check for code
+                        # Regex: "account" followed by 6 digits
+                        match = re.search(r'account\D*(\d{6})', clean_body, re.IGNORECASE)
+                        if match:
+                            code = match.group(1)
+                            log.info(f"✅ Auto-MFA: Found code {code}")
+                            mail.logout()
+                            return code
+            
+            mail.logout()
+        except Exception as e:
+            log.error(f"❌ Auto-MFA failed: {e}")
+        
+        return None
+
     def authenticate(self) -> bool:
         """Authenticate with Garmin Connect.
-        Tries saved session first, falls back to full login + MFA."""
+        Tries saved session first, falls back to full login + Auto-MFA."""
         # 1. Try resuming
         try:
             garth.resume(self.session_dir)
@@ -162,12 +242,29 @@ class EnhancedGarminDataFetcher:
         except Exception:
             pass
 
-        # 2. Full login
+        # 2. Refined MFA Callback
+        def mfa_callback():
+            # 1. Try Auto-MFA from Email
+            log.info("⏳ Waiting 15s for MFA email to arrive...")
+            time.sleep(15) # Wait for email delivery
+            code = self._get_mfa_code_from_email()
+            if code:
+                return code
+            
+            # 2. If headless, fail
+            is_headless = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
+            if is_headless:
+                raise RuntimeError("❌ Auto-MFA failed and cannot prompt in headless mode.")
+                
+            # 3. Interactive prompt
+            return input("Enter MFA code: ")
+
+        # 3. Full login
         try:
-            log.info("🔄 Logging into Garmin Connect…")
+            log.info("🔄 Logging into Garmin Connect (Session expired)...")
             garth.login(
                 self.email, self.password,
-                prompt_mfa=lambda: input("Enter MFA code: "),
+                prompt_mfa=mfa_callback,
             )
             self.authenticated = True
             Path(self.session_dir).mkdir(parents=True, exist_ok=True)
@@ -175,7 +272,7 @@ class EnhancedGarminDataFetcher:
             log.info("💾 Session saved")
             return True
         except Exception as e:
-            log.info(f"❌ Authentication failed: {e}")
+            log.error(f"❌ Authentication failed: {e}")
             return False
 
     # ─── Main Entry Point ─────────────────────────────────────

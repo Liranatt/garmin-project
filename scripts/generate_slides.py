@@ -1,167 +1,249 @@
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.patches as patches
-import matplotlib.image as mpimg
+import matplotlib.lines as lines
 from PIL import Image
 import os
-import math
+import matplotlib.font_manager as fm
 
-# Configuration
-THEME = {
-    'bg': '#0E1117',        # Streamlit Dark
-    'text': '#FAFAFA',      # White-ish
-    'accent': '#00F5A0',    # Teal
-    'secondary': '#667EEA', # Purple
-    'dim': '#A0A0A0',       # Grey
+# ==========================================
+# DESIGN SYSTEM: "BENTO GRID 2026"
+# ==========================================
+SLIDE_W, SLIDE_H = 16, 9
+DPI = 300
+
+# Color Palette - "Technical" & "Premium"
+COLORS = {
+    'bg_canvas':  '#F3F4F6',   # Cool light grey background
+    'card_bg':    '#FFFFFF',   # Pure white cards
+    'text_main':  '#111827',   # Near Black
+    'text_sec':   '#6B7280',   # Cool Grey
+    'accent':     '#2563EB',   # Engineering Blue
+    'border_subt': '#E5E7EB',  # Very subtle card borders
 }
 
-SLIDE_SIZE = (16, 9)
-DPI = 100
+# Typography - System Stack
+FONTS = {
+    'sans': 'Segoe UI',
+    'cond': 'Segoe UI', 
+    'mono': 'Consolas',
+}
 
-def setup_slide(title):
-    fig = plt.figure(figsize=SLIDE_SIZE, dpi=DPI, facecolor=THEME['bg'])
+# Type Scale 
+TYPE = {
+    'hero':       {'fontsize': 48, 'weight': 'bold', 'color': COLORS['text_main']},
+    'h1':         {'fontsize': 32, 'weight': 'bold', 'color': COLORS['text_main']}, # Slide titles
+    'h2':         {'fontsize': 24, 'weight': '600',  'color': COLORS['text_main']},
+    'h3':         {'fontsize': 18, 'weight': '600',  'color': COLORS['text_main']}, # Sub-sections
+    'label':      {'fontsize': 12, 'weight': '600',  'color': COLORS['accent']},
+    'body':       {'fontsize': 14, 'weight': 'normal','color': COLORS['text_main']},
+    'caption':    {'fontsize': 12, 'weight': 'normal','color': COLORS['text_sec']},
+}
+
+# ==========================================
+# UI COMPONENTS
+# ==========================================
+
+def setup_slide():
+    fig = plt.figure(figsize=(SLIDE_W, SLIDE_H), dpi=DPI, facecolor=COLORS['bg_canvas'])
     ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_facecolor(THEME['bg'])
-    
-    # Title
-    ax.text(0.05, 0.90, title.upper(), color=THEME['accent'], 
-            fontsize=24, fontweight='bold', fontname='Arial')
-    
-    # Branding - Bottom Right
-    ax.text(0.95, 0.05, "Garmin Health Intelligence // Engineering Deep Dive", 
-            color=THEME['dim'], fontsize=10, ha='right', fontname='Consolas')
-    
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
+    ax.set_facecolor(COLORS['bg_canvas'])
+    ax.set_xlim(0, SLIDE_W)
+    ax.set_ylim(0, SLIDE_H)
     ax.axis('off')
     return fig, ax
 
-def add_bullet_points(ax, points, x=0.1, y=0.75, spacing=0.08, fontsize=18):
-    for pt in points:
-        ax.text(x, y, "• " + pt, color=THEME['text'], fontsize=fontsize, va='top', fontname='Arial', wrap=True)
-        y -= spacing
+def draw_card(ax, x, y, w, h, title=None):
+    """Draws a premium 'Bento' card with soft shadow"""
+    # Shadows
+    shadow1 = patches.FancyBboxPatch((x+0.1, y-0.1), w, h, boxstyle="round,pad=0", 
+                                     fc='#000000', alpha=0.03, zorder=1)
+    shadow2 = patches.FancyBboxPatch((x+0.05, y-0.05), w, h, boxstyle="round,pad=0", 
+                                     fc='#000000', alpha=0.05, zorder=1)
+    ax.add_patch(shadow1)
+    ax.add_patch(shadow2)
 
-def add_code_block(ax, code, x=0.1, y=0.5, fontsize=12):
-    ax.text(x, y, code, color='#E0E0E0', fontsize=fontsize, 
-            fontname='Consolas', va='top', bbox=dict(facecolor='#1E1E1E', edgecolor='#333333', pad=10))
+    # Card
+    card = patches.FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0", 
+                                  fc=COLORS['card_bg'], ec=COLORS['border_subt'], lw=1, zorder=2)
+    ax.add_patch(card)
+    
+    # Title
+    if title:
+        ax.text(x + 0.4, y + h - 0.5, title.upper(), 
+                fontsize=11, fontweight='bold', color=COLORS['accent'], fontname=FONTS['sans'], 
+                ha='left', va='center', zorder=5)
 
-def add_image(ax, path, x, y, width, height, caption=None):
+def add_header(ax, title):
+    """Adds CENTERED slide header"""
+    ax.text(SLIDE_W/2, 8.2, title.upper(), **TYPE['h1'], ha='center', va='bottom')
+    # Optional centered decor line
+    # ax.plot([SLIDE_W/2 - 1, SLIDE_W/2 + 1], [8.0, 8.0], color=COLORS['accent'], lw=3)
+
+def place_image(ax, path, x, y, w, h, label=None):
+    """Places image inside a card region"""
     if not os.path.exists(path):
-        print(f"Warning: Image not found {path}")
-        ax.text(x + width/2, y + height/2, f"[Missing Image: {os.path.basename(path)}]", 
-                color='red', ha='center', va='center')
+        ax.text(x + w/2, y + h/2, f"MISSING: {os.path.basename(path)}", 
+                ha='center', color='red', zorder=10)
         return
 
     try:
         img = Image.open(path)
-        ax.imshow(img, extent=(x, x+width, y, y+height), aspect='auto', zorder=1)
+        img_w, img_h = img.size
+        
+        # Container
+        draw_card(ax, x, y, w, h, title=label)
+        
+        # Fit logic
+        padding = 0.8 if label else 0.4 # Less padding if no label
+        avail_w = w - padding
+        avail_h = h - padding
+        aspect = img_w / img_h
+        
+        if avail_w / aspect < avail_h:
+            disp_w = avail_w
+            disp_h = avail_w / aspect
+        else:
+            disp_h = avail_h
+            disp_w = avail_h * aspect
+            
+        center_x = x + w/2
+        center_y = y + h/2
+        if label:
+            center_y -= 0.1
+
+        ax.imshow(img, extent=[center_x - disp_w/2, center_x + disp_w/2, 
+                               center_y - disp_h/2, center_y + disp_h/2],
+                  aspect='equal', zorder=6)
         
         # Border
-        rect = patches.Rectangle((x, y), width, height, linewidth=1, edgecolor=THEME['accent'], facecolor='none', zorder=2)
+        rect = patches.Rectangle((center_x - disp_w/2, center_y - disp_h/2), disp_w, disp_h, 
+                                 linewidth=1, edgecolor=COLORS['border_subt'], facecolor='none', zorder=7)
         ax.add_patch(rect)
-        
-        if caption:
-            ax.text(x + width/2, y - 0.04, caption, color=THEME['dim'], ha='center', fontsize=12, style='italic')
+
     except Exception as e:
-        print(f"Error checking image {path}: {e}")
+        print(f"Error: {e}")
+
+# ==========================================
+# SLIDE LOGIC
+# ==========================================
 
 def create_slides():
-    output_pdf = "docs/garmin_engineering_deep_dive.pdf"
-    
-    with PdfPages(output_pdf) as pdf:
+    output = "docs/garmin_engineering_deep_dive.pdf"
+    with PdfPages(output) as pdf:
         
-        # SLIDE 1: Authentic Title
-        fig, ax = setup_slide("Garmin Health Intelligence")
-        ax.text(0.5, 0.6, "How do you prevent\nAI from Hallucinating?", 
-                color=THEME['text'], fontsize=40, ha='center', fontweight='bold')
-        ax.text(0.5, 0.35, "An Engineering approach to Personal Health Analytics\nInspired by Prof. Oren Freifeld's 'Intro to Deep Learning' (BGU)", 
-                color=THEME['secondary'], fontsize=16, ha='center', style='italic')
+        # --- SLIDE 1: HERO COVER ---
+        fig, ax = setup_slide()
         
-        tech_stack = "Python • PostgreSQL • CrewAI • Streamlit • Scipy • Heroku"
-        ax.text(0.5, 0.2, tech_stack, color=THEME['dim'], fontsize=14, ha='center', fontname='Consolas')
+        # Center Card
+        cw, ch = 12, 6
+        cx, cy = (SLIDE_W-cw)/2, (SLIDE_H-ch)/2
+        draw_card(ax, cx, cy, cw, ch)
+        
+        # Content - Title Only (No Subtitle)
+        ax.text(SLIDE_W/2, SLIDE_H/2, "GARMIN HEALTH\nINTELLIGENCE", 
+                **TYPE['hero'], ha='center', va='center')
+        
+        # Simple accent line below
+        ax.plot([SLIDE_W/2 - 2, SLIDE_W/2 + 2], [SLIDE_H/2 - 1.5, SLIDE_H/2 - 1.5], 
+                 color=COLORS['accent'], lw=4, zorder=10)
+        
         pdf.savefig(fig)
         plt.close()
-
-        # SLIDE 2: The Core Philosophy (The Pipe)
-        fig, ax = setup_slide("Determinism Before Semantics")
-        points = [
-            "Problem: LLMs fed raw data will invent correlations.",
-            "Solution: Constrain the AI to look through a 'Pipe'.",
-            "The Pipe = Validated Statistical Results Only.",
-            "The AI can't see raw data, only what the math proves."
+        
+        # --- SLIDE 2: ARCHITECTURE ---
+        fig, ax = setup_slide()
+        add_header(ax, "System Architecture")
+        
+        # Left Card: Mission
+        draw_card(ax, 0.8, 1.5, 6.8, 6.0, title="Mission Parameters")
+        
+        ly = 6.0
+        step = 1.5
+        items = [
+            ("Probabilistic Engines", "LLMs generate plausible text,\nnot factual truth."),
+            ("The Hallucination Gap", "Raw data + Prompts =\nUnreliable outputs."),
+            ("Deterministic Fix", "Validated math constraints\nensure 100% accuracy.")
         ]
-        add_bullet_points(ax, points)
+        for title, desc in items:
+            ax.text(1.2, ly, title, **TYPE['h3'], ha='left')
+            ax.text(1.2, ly - 0.5, desc, **TYPE['body'], ha='left', va='top')
+            ly -= step
+
+        # Right Card: Pipeline
+        draw_card(ax, 8.4, 1.5, 6.8, 6.0, title="Pipeline Logic")
         
-        # Visual diagram of "The Pipe"
-        diagram = """
-        [ Raw Garmin Data ]
-               ⬇
-        [ DETERMINISTIC MATH LAYER ] (The Guardrail)
-        • Pearson Correlations (Linear)
-        • Markov Chains (State Transitions)
-        • AR(1) Models (Persistence)
-               ⬇
-        [ SEMANTIC LAYER ] (The AI)
-        • 5 Specialized Agents (Read-Only)
-        • "Here is the math. Explain it."
-               ⬇
-        [ True Insight ]
-        """
-        add_code_block(ax, diagram, x=0.55, y=0.8, fontsize=10)
+        # Nodes
+        nx = 8.4 + 3.4 
+        ny = 6.0
+        nodes = ["Raw Sensor Data", "Deterministic Math", "Semantic Agents"]
+        
+        for i, node in enumerate(nodes):
+            patches.FancyBboxPatch((nx-2, ny-0.4), 4, 0.8, boxstyle="round,pad=0.1", 
+                                   fc='white', ec=COLORS['accent'], lw=2, zorder=5)
+            # Fixed Color
+            ax.text(nx, ny, node, **TYPE['h3'], ha='center', zorder=6)
+            
+            if i < len(nodes) - 1:
+                ax.arrow(nx, ny-0.6, 0, -0.8, color=COLORS['text_sec'], head_width=0.15, length_includes_head=True, zorder=4)
+            ny -= 1.5
+
+        pdf.savefig(fig)
+        plt.close()
+        
+        # --- SLIDE 3: DASHBOARD ---
+        fig, ax = setup_slide()
+        add_header(ax, "Operational Dashboard") # Centered
+        # No label
+        place_image(ax, "docs/screenshots/overview.png", 0.8, 1.0, 14.4, 6.5, label=None)
         pdf.savefig(fig)
         plt.close()
 
-        # SLIDE 3: The Dashboard (Evidence)
-        fig, ax = setup_slide("The Result: N-of-1 Insights")
-        add_image(ax, "docs/screenshots/overview.png", 0.1, 0.1, 0.8, 0.65, "Live Dashboard running on Heroku")
+        # --- SLIDE 4: LOGIC ---
+        fig, ax = setup_slide()
+        add_header(ax, "Core Logic") # Centered
+        
+        # Left Stack
+        stack_x = 0.8
+        stack_w = 5.0
+        stack_h = 1.8
+        gap = 0.3
+        sy = 1.5 + (stack_h + gap) * 2 
+        
+        logic_items = [
+            ("Pearson Correlation", "Detects linear\nrelationships"),
+            ("Markov Chains", "Predicts state\ntransitions"),
+            ("AR(1) Models", "Separates trend\nfrom noise")
+        ]
+        
+        for title, desc in logic_items:
+            draw_card(ax, stack_x, sy, stack_w, stack_h, title=None)
+            ax.text(stack_x + 0.3, sy + stack_h - 0.5, title, **TYPE['label'], ha='left')
+            ax.text(stack_x + 0.3, sy + stack_h - 1.0, desc, **TYPE['body'], ha='left', va='top')
+            sy -= (stack_h + gap)
+            
+        # Right: Heatmap (No Label)
+        place_image(ax, "docs/screenshots/correlations.png", 6.2, 1.5, 9.0, 6.0, label=None)
+        
         pdf.savefig(fig)
         plt.close()
 
-        # SLIDE 4: The Math (Proof of Rigor)
-        fig, ax = setup_slide("You Can't Fake Math")
-        ax.text(0.1, 0.75, "We validate relationships mathematically before the AI sees them.", color=THEME['text'], fontsize=16)
-        
-        # Render Math
-        math_text = (
-            r"$\bf{Pearson\ Correlation:}\ r = \frac{\sum(x-\bar{x})(y-\bar{y})}{\sqrt{\sum(x-\bar{x})^2 \sum(y-\bar{y})^2}}$"
-            "\n\n"
-            r"$\bf{Markov\ Transition:}\ P_{ij} = P(S_{t+1}=j \mid S_t=i)$"
-            "\n\n"
-            r"$\bf{AR(1)\ Model:}\ X_t = c + \phi X_{t-1} + \epsilon_t$"
-        )
-        ax.text(0.1, 0.35, math_text, color=THEME['accent'], fontsize=18, fontname='DejaVu Sans Mono')
-        
-        add_image(ax, "docs/screenshots/correlations.png", 0.55, 0.2, 0.4, 0.55, "Computed Correlation Matrix")
+        # --- SLIDE 5: AGENTS ---
+        fig, ax = setup_slide()
+        add_header(ax, "Multi-Agent System") # Centered
+        place_image(ax, "docs/screenshots/agent_chat.png", 0.8, 1.0, 14.4, 6.5, label=None)
         pdf.savefig(fig)
         plt.close()
-
-        # SLIDE 5: Deep Dive (The new screenshot)
-        fig, ax = setup_slide("Deep Dive Analysis")
         
+        # --- SLIDE 6: DEEP DIVE ---
         if os.path.exists("docs/screenshots/deep_dive.png"):
-            add_image(ax, "docs/screenshots/deep_dive.png", 0.1, 0.1, 0.8, 0.65, "Distribution & Time-Series Analysis")
-        else:
-            # Fallback if user hasn't added it yet
-            ax.text(0.5, 0.5, "Deep Dive Analysis Placeholder", color=THEME['dim'], ha='center', fontsize=20)
-            ax.text(0.5, 0.45, "(Add docs/screenshots/deep_dive.png to see this slide)", color='red', ha='center', fontsize=12)
+            fig, ax = setup_slide()
+            add_header(ax, "Signal Analysis") # Centered
+            place_image(ax, "docs/screenshots/deep_dive.png", 0.8, 1.0, 14.4, 6.5, label=None)
+            pdf.savefig(fig)
+            plt.close()
 
-        pdf.savefig(fig)
-        plt.close()
-
-        # SLIDE 6: The Agent Team
-        fig, ax = setup_slide("The Agent Team")
-        points = [
-            "5 Specialists (not 1 generic prompt).",
-            "Read-Only Access via SQL tools.",
-            "Long-term memory tracks previous advice.",
-            "Built with CrewAI + Gemini 2.5 Flash."
-        ]
-        add_bullet_points(ax, points)
-        add_image(ax, "docs/screenshots/agent_chat.png", 0.1, 0.05, 0.8, 0.45, "Multi-Agent Conversation")
-        pdf.savefig(fig)
-        plt.close()
-        
-        print(f"Successfully generated {output_pdf}")
+        print(f"Generated Final Clean Deck: {output}")
 
 if __name__ == "__main__":
     create_slides()

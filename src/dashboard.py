@@ -559,6 +559,7 @@ def _safe_fmt(v, fmt=".0f"):
 # ═══════════════════════════════════════════════════════════════
 
 PAGES = [
+    "Home",
     "Overview",
     "Trends",
     "Correlations",
@@ -572,6 +573,9 @@ PAGES = [
 
 
 def main():
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = "Home"
+
     with st.sidebar:
         st.markdown(
             '<div style="padding:1.5rem .5rem 1rem;">'
@@ -581,7 +585,21 @@ def main():
             'letter-spacing:.15em;margin-top:.25rem;">Personal Health Analytics v3</div></div>',
             unsafe_allow_html=True,
         )
-        page = st.radio("Navigate", PAGES, label_visibility="collapsed")
+        
+        # Sync sidebar with session state
+        try:
+            idx = PAGES.index(st.session_state.current_page)
+        except ValueError:
+            idx = 0
+            
+        selected_page = st.radio(
+            "Navigate", PAGES, index=idx, label_visibility="collapsed"
+        )
+        
+        # Update session state if sidebar clicked
+        if selected_page != st.session_state.current_page:
+            st.session_state.current_page = selected_page
+            st.rerun()
 
         st.markdown('<div class="sh">Settings</div>', unsafe_allow_html=True)
         days = st.slider("Default window (days)", 7, 180, 30)
@@ -591,7 +609,9 @@ def main():
         if df.empty:
             st.error("No data. Run `python src/weekly_sync.py` first.")
             return
-        {
+
+        page_map = {
+            "Home": pg_home,
             "Overview": pg_overview,
             "Trends": pg_trends,
             "Correlations": pg_correlations,
@@ -601,11 +621,57 @@ def main():
             "Agent Chat": pg_chat,
             "Agent Analysis": pg_ai,
             "Goals": pg_goals,
-        }[page](df, days)
+        }
+        
+        # Run the current page function
+        if st.session_state.current_page in page_map:
+            page_map[st.session_state.current_page](df, days)
+            
     except Exception as e:
         st.error(f"Dashboard error: {e}")
         with st.expander("Details"):
             st.code(traceback.format_exc())
+
+
+# ══════════════════════════════════════════════════════════════
+#  0. HOME (Launcher)
+# ══════════════════════════════════════════════════════════════
+
+def pg_home(df, days):
+    st.markdown('<div class="pt">Welcome Home</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ps">Navigate your health intelligence</div>', unsafe_allow_html=True)
+
+    def _nav_btn(label, target_page, icon="🔹", help_text=""):
+        # Custom button style
+        if st.button(f"{icon}  {label}", use_container_width=True, help=help_text):
+            st.session_state.current_page = target_page
+            st.rerun()
+
+    c1, c2 = st.columns(2, gap="medium")
+    
+    with c1:
+        st.markdown('<div class="sh">Analytics</div>', unsafe_allow_html=True)
+        _nav_btn("Overview", "Overview", "📊", "High-level summary of your health")
+        _nav_btn("Trends & Patterns", "Trends", "📈", "Long-term trend analysis")
+        _nav_btn("Correlation Matrix", "Correlations", "🔢", "Statistical correlations")
+        _nav_btn("Deep Dive", "Deep Dive", "🔍", "Detailed day-by-day inspection")
+
+    with c2:
+        st.markdown('<div class="sh">Intelligence</div>', unsafe_allow_html=True)
+        _nav_btn("Full Agent Analysis", "Agent Analysis", "🤖", "Run AI agents on your data")
+        _nav_btn("Chat with Data", "Agent Chat", "💬", "Ask questions to the dataset")
+        _nav_btn("Goals & Benchmarks", "Goals", "🎯", "Track progress against goals")
+        
+    st.markdown('<div class="sh">Data & Logs</div>', unsafe_allow_html=True)
+    c3, c4 = st.columns(2, gap="medium")
+    with c3:
+        _nav_btn("Daily Input Log", "Daily Input", "📝", "Log wellness and nutrition")
+    with c4:
+        _nav_btn("Date Explorer", "Date Explorer", "📅", "Inspect raw data for any date")
+
+    # Quick Stats
+    st.markdown("---")
+    st.caption(f"Last sync: {df.iloc[0]['date']} • {len(df)} days of history loaded")
 
 
 # ══════════════════════════════════════════════════════════════
