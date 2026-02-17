@@ -40,7 +40,14 @@ jobs:
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
           GARTH_HOME: ~/.garth
         working-directory: src
-        run: python weekly_sync.py --days 2
+        run: |
+          echo "Debugging Environment Variables:"
+          if [ -z "${POSTGRES_CONNECTION_STRING}" ]; then
+            echo "❌ POSTGRES_CONNECTION_STRING is EMPTY"
+          else
+            echo "✅ POSTGRES_CONNECTION_STRING is SET (length: ${#POSTGRES_CONNECTION_STRING})"
+          fi
+          python weekly_sync.py --days 2
 
       - name: Save garth session
         if: always()
