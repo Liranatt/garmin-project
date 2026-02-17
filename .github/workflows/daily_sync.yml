@@ -23,15 +23,19 @@ jobs:
       - name: Restore garth session
         run: |
           mkdir -p ~/.garth
-          echo '${{ secrets.GARTH_SESSION }}' | base64 -d > ~/.garth/oauth1_token.json || true
-          echo '${{ secrets.GARTH_SESSION_OAUTH2 }}' | base64 -d > ~/.garth/oauth2_token.json || true
+          if [ -n "${{ secrets.GARTH_SESSION }}" ]; then
+            echo '${{ secrets.GARTH_SESSION }}' | base64 -d > ~/.garth/oauth1_token.json || true
+          fi
+          if [ -n "${{ secrets.GARTH_SESSION_OAUTH2 }}" ]; then
+            echo '${{ secrets.GARTH_SESSION_OAUTH2 }}' | base64 -d > ~/.garth/oauth2_token.json || true
+          fi
 
       - name: Run weekly sync
         env:
-          POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
+          POSTGRES_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
           GARTH_HOME: ~/.garth
