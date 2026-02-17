@@ -397,9 +397,12 @@ class AdvancedHealthAgents:
             - Check if changes are sustained or volatile.
             - Report BEST and WORST day — spread matters more than average.
 
-            RECOVERY RULES:
+           RECOVERY RULES:
             - After hard days: does HRV bounce back? Does RHR normalize?
               Bounce-back speed > any single metric.
+            - HIGH LOAD ALERT: If a specific day had very high load (e.g. >1.5x average or 'HARD'),
+              assume it likely impacted sleep/recovery even if the general correlation is weak.
+              Check that specific day's next-day sleep score explicitly.
             - Don't call "overtraining" unless MULTIPLE metrics decline
               simultaneously over MULTIPLE consecutive days.
             - ACWR: 0.8-1.3 = optimal, <0.8 = detraining, >1.5 = injury risk.
