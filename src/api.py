@@ -213,6 +213,41 @@ def get_latest_snapshot():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/api/v1/metrics/history")
+def get_metrics_history(days: int = 90):
+    safe_days = max(7, min(int(days), 365))
+    try:
+        with closing(get_db_connection()) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT date,
+                           resting_hr,
+                           hrv_last_night AS hrv,
+                           sleep_score,
+                           stress_level AS stress,
+                           bb_peak AS battery,
+                           daily_load_acute AS training_load
+                    FROM daily_metrics
+                    WHERE date >= CURRENT_DATE - (%s * INTERVAL '1 day')
+                    ORDER BY date ASC
+                    """,
+                    (safe_days,),
+                )
+                rows = cur.fetchall()
+
+        data = []
+        for row in rows:
+            item = dict(row)
+            if item.get("date") is not None:
+                item["date"] = str(item["date"])
+            data.append(item)
+
+        return {"days": safe_days, "data": data}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/v1/insights/latest")
 def get_latest_insights():
     try:
