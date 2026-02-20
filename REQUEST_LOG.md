@@ -22,6 +22,7 @@ Updated: 2026-02-20
 | 14 | Confirm backend still matches frontend integration contract | DONE | Local route smoke-check returned HTTP 200 on all contract endpoints and chat response alias fields. |
 | 15 | Fix non-fast-forward GitHub push on `main` | DONE | Rebased local commits onto `origin/main`, resolved `src/api.py` conflict, and pushed successfully (`81ff9d9`). |
 | 16 | Check frontend chat rendering and fix corruption if needed | DONE | Patched `gps_presentation/garmin/index.html` `formatChatReply()` to preserve backend fallback/short replies (no forced "Key takeaways" rewrite); pushed commit `f13923c` to frontend `main`. |
+| 17 | Investigate live chat fallback and patch backend AI import path | DONE | Updated `src/api.py` chat endpoint to import tools via `src.enhanced_agents` first (with fallback), fixing module-path issues in Heroku runtime. |
 
 ## Environment / Access Notes
 
@@ -31,4 +32,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Validate first scheduled GitHub Actions runs (weekly reminder workflow + daily bulk import poller), confirm Heroku deploy health endpoint, and verify frontend auto-deploy includes commit `f13923c`.
+- Confirm Heroku deploy picked up backend commit with chat import fix, then retest `/api/v1/chat` for non-fallback AI response.

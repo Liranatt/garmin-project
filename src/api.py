@@ -594,13 +594,22 @@ def chat(body: ChatRequest) -> Dict[str, Any]:
     try:
         # Optional AI path. If unavailable, fallback returns a deterministic response.
         from crewai import Agent, Crew, Process, Task
-        from enhanced_agents import (
-            _get_llm,
-            analyze_pattern,
-            calculate_correlation,
-            find_best_days,
-            run_sql_query,
-        )
+        try:
+            from src.enhanced_agents import (
+                _get_llm,
+                analyze_pattern,
+                calculate_correlation,
+                find_best_days,
+                run_sql_query,
+            )
+        except Exception:
+            from enhanced_agents import (
+                _get_llm,
+                analyze_pattern,
+                calculate_correlation,
+                find_best_days,
+                run_sql_query,
+            )
 
         agent = Agent(
             role="Health Data Analyst",
