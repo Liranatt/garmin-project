@@ -24,6 +24,7 @@ Updated: 2026-02-20
 | 16 | Check frontend chat rendering and fix corruption if needed | DONE | Patched `gps_presentation/garmin/index.html` `formatChatReply()` to preserve backend fallback/short replies (no forced "Key takeaways" rewrite); pushed commit `f13923c` to frontend `main`. |
 | 17 | Investigate live chat fallback and patch backend AI import path | DONE | Updated `src/api.py` chat endpoint to import tools via `src.enhanced_agents` first (with fallback), fixing module-path issues in Heroku runtime. |
 | 18 | Fix agent DB reachability in Heroku chat path | DONE | Added DB URL normalization + automatic `DATABASE_URL` -> `POSTGRES_CONNECTION_STRING` env alias in `src/api.py` so CrewAI tools can connect consistently. |
+| 19 | Verify production chat and insights quality after deploy | DONE | Live website now returns valid AI responses (not fallback) and renders insights sections correctly. |
 
 ## Environment / Access Notes
 
@@ -33,4 +34,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Confirm Heroku deploy picked up latest backend commit (env alias fix), then retest `/api/v1/chat` and inspect logs if still unreachable.
+- Monitor upcoming scheduler runs and confirm bulk import path after next Garmin export email.
