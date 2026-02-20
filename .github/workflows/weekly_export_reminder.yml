@@ -1,0 +1,31 @@
+name: Weekly Export Reminder
+on:
+  schedule:
+    # Every Sunday at 08:00 UTC
+    - cron: "0 8 * * 0"
+  workflow_dispatch:
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send weekly export reminder
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          # Optional. Defaults to lirattar@gmail.com in code if missing.
+          EXPORT_REMINDER_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+        run: python src/send_export_reminder.py
+

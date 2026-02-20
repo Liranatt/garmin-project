@@ -64,23 +64,20 @@ The project operates as a fully automated daily pipeline (runs every morning via
 | Task | Frequency | Platform | Purpose |
 |---|---|---|---|
 | **Daily Sync** | Daily (06:00 UTC) | GitHub Actions | Fetches recent data (sleep, steps, HR) for Dashboard. |
-| **Export Reminder** | Weekly (Sun 08:00 AM) | Heroku Scheduler | Reminds you to click "Garmin Export". |
-| **Bulk Import** | Daily (02:00 AM) | Heroku Scheduler | Checks for & processes the export file you requested. |
+| **Export Reminder** | Weekly (Sun 08:00 UTC) | GitHub Actions | Sends reminder email to trigger Garmin export manually. |
+| **Bulk Import** | Daily (02:00 UTC) | GitHub Actions | Polls mailbox for fresh export link and imports when available. |
 
-### Heroku Scheduler Setup
-To keep bulk export fully automated on Heroku (not your local machine), configure both jobs:
-1. Add a job to Heroku Scheduler.
-2. Command: `python src/send_export_reminder.py`
-3. Frequency: Weekly (e.g., Sunday 08:00 AM).
+### GitHub Actions Setup
+Bulk export automation is handled by scheduled workflows:
+1. `.github/workflows/weekly_export_reminder.yml` (weekly reminder email)
+2. `.github/workflows/daily_bulk_import.yml` (daily mailbox poll + import)
 
-4. Add another job to Heroku Scheduler.
-5. Command: `python src/bulk_import.py --auto --overlap-days 7`
-6. Frequency: Daily (recommended once per day, e.g. 02:00 AM).
-
-Required Heroku config vars for bulk import job:
+Required GitHub Secrets:
 - `POSTGRES_CONNECTION_STRING`
+- `GARMIN_EMAIL`
+- `GARMIN_PASSWORD`
 - `EMAIL_APP_PASSWORD`
-- `EMAIL_RECIPIENT` (your Gmail inbox receiving Garmin emails)
+- `EMAIL_RECIPIENT`
 
 ## 💾 Database Structure
 
