@@ -31,6 +31,7 @@ Updated: 2026-02-20
 | 23 | Fix window dropdown white-on-white unreadable options | DONE | Styled select/option foreground/background for readable contrast in analytics toolbar. |
 | 24 | Add workout progress sport filters (running/cycling/swimming/skiing/gym) | DONE | Added sport filter UI and backend `sport` query support in `/api/v1/workouts/progress`; trends/workout summaries now scope to selected sport. |
 | 25 | Expand matrices (including Pearson + Markov) for cross-activity effects | DONE | Added backend `/api/v1/analytics/cross-effects` with next-day sport-to-metric Pearson effects and readiness-state Markov transitions; integrated key effects into correlations UI summary. |
+| 26 | Finish remaining strict insight schema + add dedicated tests, then push | DONE | Enforced structured insight fields (`headline`, `what_changed`, `why_it_matters`, `next_24_48h`, 3 bullets <=280 chars), updated agent output guidance, and added `tests/test_api_contract.py` for snapshot/workout/cross-effects/insight contracts. |
 
 ## Environment / Access Notes
 
@@ -40,4 +41,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Validate live dashboard behavior after deploys and tune thresholds/wording for snapshot/trend/correlation summaries based on your preference.
+- Deploy latest backend/frontend commits and validate live UI wording/threshold tuning from real daily data.

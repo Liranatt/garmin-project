@@ -131,45 +131,91 @@ def _window_note(values: List[float], higher_is_better: bool = True) -> str:
     return f"{direction} {abs(pct):.1f}% between early and recent window."
 
 
-def _concise_insight_text(text: str, max_items: int = 3) -> str:
+def _clip_text(text: str, max_len: int = 280) -> str:
+    s = _text(text).replace("\n", " ").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3].rstrip() + "..."
+
+
+def _structured_insight(text: str) -> Dict[str, Any]:
+    """Enforce short, human-readable insight schema for UI cards."""
     cleaned = _text(text)
     if not cleaned:
-        return ""
-    lines: List[str] = []
+        empty = "Insufficient data to generate this section yet."
+        return {
+            "headline": "Daily Health Insight",
+            "what_changed": empty,
+            "why_it_matters": empty,
+            "next_24_48h": "Prioritize recovery basics and reassess on the next daily sync.",
+            "bullets": [
+                f"What changed: {empty}",
+                f"Why it matters: {empty}",
+                "Next 24-48h: Prioritize recovery basics and reassess on the next daily sync.",
+            ],
+            "summary": f"- What changed: {empty}\n- Why it matters: {empty}\n- Next 24-48h: Prioritize recovery basics and reassess on the next daily sync.",
+        }
+
+    candidates: List[str] = []
     for raw in cleaned.splitlines():
         line = raw.strip().lstrip("-* ").strip()
         if not line:
             continue
-        low = line.lower()
-        if any(
-            token in low
-            for token in (
-                "recommend",
-                "should",
-                "focus",
-                "avoid",
-                "increase",
-                "decrease",
-                "stress",
-                "sleep",
-                "recovery",
-                "load",
-                "readiness",
-            )
-        ):
-            lines.append(line)
-    if not lines:
-        sentence = cleaned.replace("\n", " ").strip()
-        return sentence[:240] + ("..." if len(sentence) > 240 else "")
-    unique: List[str] = []
-    for line in lines:
-        marker = line.lower()[:36]
-        if any(marker in u.lower() or u.lower() in marker for u in unique):
+        if line.startswith("|") and line.endswith("|"):
             continue
-        unique.append(line)
-        if len(unique) >= max_items:
+        if set(line) <= {"=", "-", ":"}:
+            continue
+        candidates.append(line)
+
+    what_changed = ""
+    why_it_matters = ""
+    next_24_48h = ""
+
+    for line in candidates:
+        low = line.lower()
+        if not what_changed and any(t in low for t in ("trend", "up", "down", "increase", "decrease", "improved", "declined", "drop", "rise", "stable")):
+            what_changed = line
+            continue
+        if not why_it_matters and any(t in low for t in ("because", "means", "risk", "impact", "matters", "recovery", "fatigue", "stress", "readiness")):
+            why_it_matters = line
+            continue
+        if not next_24_48h and any(t in low for t in ("recommend", "should", "next", "today", "tomorrow", "focus", "avoid", "keep", "do")):
+            next_24_48h = line
+
+    for line in candidates:
+        if not what_changed:
+            what_changed = line
+            continue
+        if not why_it_matters and line != what_changed:
+            why_it_matters = line
             break
-    return "\n".join(f"- {line}" for line in unique)
+    if not next_24_48h:
+        next_24_48h = "Keep effort moderate today, protect sleep quality tonight, and reassess after tomorrow's readiness."
+
+    what_changed = _clip_text(what_changed or "Weekly pattern changed, but details are limited.", 260)
+    why_it_matters = _clip_text(why_it_matters or "This pattern can affect recovery quality and training response.", 260)
+    next_24_48h = _clip_text(next_24_48h, 260)
+    headline = _clip_text(what_changed, 84)
+
+    def bullet(label: str, value: str) -> str:
+        prefix = f"{label}: "
+        allowed = max(48, 280 - len(prefix))
+        return prefix + _clip_text(value, allowed)
+
+    bullets = [
+        bullet("What changed", what_changed),
+        bullet("Why it matters", why_it_matters),
+        bullet("Next 24-48h", next_24_48h),
+    ]
+    summary = "\n".join(f"- {b}" for b in bullets)
+    return {
+        "headline": headline,
+        "what_changed": what_changed,
+        "why_it_matters": why_it_matters,
+        "next_24_48h": next_24_48h,
+        "bullets": bullets,
+        "summary": summary,
+    }
 
 
 def _matches_sport(activity_type: str, sport: str) -> bool:
@@ -840,15 +886,21 @@ def insights_latest() -> Dict[str, Any]:
             for r in rows:
                 summary_text = _text(r.get(key_text_col)) if key_text_col else ""
                 rec_text = _text(r.get(rec_col)) if rec_col else ""
-                text = rec_text or _concise_insight_text(summary_text)
+                text = rec_text or summary_text
+                structured = _structured_insight(text)
                 ts = r.get(created_col) if created_col else r.get("week_start_date")
                 if text:
                     insights.append(
                         {
-                            "summary": text,
-                            "insight": text,
-                            "message": text,
-                            "text": text,
+                            "summary": structured["summary"],
+                            "insight": structured["summary"],
+                            "message": structured["summary"],
+                            "text": structured["summary"],
+                            "headline": structured["headline"],
+                            "what_changed": structured["what_changed"],
+                            "why_it_matters": structured["why_it_matters"],
+                            "next_24_48h": structured["next_24_48h"],
+                            "bullets": structured["bullets"],
                             "agent": "synthesizer",
                             "agent_name": "synthesizer",
                             "source": "weekly_summaries",
@@ -879,12 +931,18 @@ def insights_latest() -> Dict[str, Any]:
                 if not txt:
                     continue
                 details = f"target={r.get('target_metric')} expected={r.get('expected_direction')}"
+                structured = _structured_insight(txt)
                 insights.append(
                     {
-                        "summary": txt,
-                        "insight": txt,
-                        "message": txt,
-                        "text": txt,
+                        "summary": structured["summary"],
+                        "insight": structured["summary"],
+                        "message": structured["summary"],
+                        "text": structured["summary"],
+                        "headline": structured["headline"],
+                        "what_changed": structured["what_changed"],
+                        "why_it_matters": structured["why_it_matters"],
+                        "next_24_48h": structured["next_24_48h"],
+                        "bullets": structured["bullets"],
                         "agent": r.get("agent_name"),
                         "agent_name": r.get("agent_name"),
                         "source": "agent_recommendations",

@@ -840,6 +840,12 @@ class AdvancedHealthAgents:
                    EXPECTED_DIRECTION: [IMPROVE/DECLINE/STABLE]
                 5. WHAT'S WORKING: 2-3 positive things to continue
                 6. HONEST LIMITATIONS: what can't we determine yet?
+                7. FINAL UI SUMMARY (MANDATORY):
+                   End your response with EXACTLY three bullets, each <= 280 chars:
+                   - What changed: ...
+                   - Why it matters: ...
+                   - Next 24-48h: ...
+                   Use plain language, avoid tables, SQL, or dense metric dumps in this block.
                 {ctx}
                 """,
                 agent=self.synthesizer,
