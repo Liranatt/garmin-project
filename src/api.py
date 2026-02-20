@@ -24,8 +24,24 @@ load_dotenv()
 log = logging.getLogger("api")
 
 
+def _normalize_db_url(value: str) -> str:
+    db_url = (value or "").strip()
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    return db_url
+
+
 def _conn_str() -> str:
-    return os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
+    return _normalize_db_url(
+        os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
+    )
+
+
+if not os.getenv("POSTGRES_CONNECTION_STRING"):
+    fallback_db_url = _normalize_db_url(os.getenv("DATABASE_URL", ""))
+    if fallback_db_url:
+        # CrewAI tools in src.enhanced_agents read this env var directly.
+        os.environ["POSTGRES_CONNECTION_STRING"] = fallback_db_url
 
 
 def _to_jsonable(value: Any) -> Any:

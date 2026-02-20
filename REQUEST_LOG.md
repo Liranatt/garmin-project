@@ -23,6 +23,7 @@ Updated: 2026-02-20
 | 15 | Fix non-fast-forward GitHub push on `main` | DONE | Rebased local commits onto `origin/main`, resolved `src/api.py` conflict, and pushed successfully (`81ff9d9`). |
 | 16 | Check frontend chat rendering and fix corruption if needed | DONE | Patched `gps_presentation/garmin/index.html` `formatChatReply()` to preserve backend fallback/short replies (no forced "Key takeaways" rewrite); pushed commit `f13923c` to frontend `main`. |
 | 17 | Investigate live chat fallback and patch backend AI import path | DONE | Updated `src/api.py` chat endpoint to import tools via `src.enhanced_agents` first (with fallback), fixing module-path issues in Heroku runtime. |
+| 18 | Fix agent DB reachability in Heroku chat path | DONE | Added DB URL normalization + automatic `DATABASE_URL` -> `POSTGRES_CONNECTION_STRING` env alias in `src/api.py` so CrewAI tools can connect consistently. |
 
 ## Environment / Access Notes
 
@@ -32,4 +33,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Confirm Heroku deploy picked up backend commit with chat import fix, then retest `/api/v1/chat` for non-fallback AI response.
+- Confirm Heroku deploy picked up latest backend commit (env alias fix), then retest `/api/v1/chat` and inspect logs if still unreachable.
