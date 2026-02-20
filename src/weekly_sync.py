@@ -168,6 +168,7 @@ class WeeklySyncPipeline:
     def _save_insights(self, insights: str):
         """Persist AI insights to weekly_summaries table."""
         week_start = date.today() - timedelta(days=date.today().weekday())
+        concise = self._build_concise_summary(insights)
 
         conn = psycopg2.connect(self.conn_str)
         conn.autocommit = True
@@ -231,17 +232,61 @@ class WeeklySyncPipeline:
                 total_steps       = EXCLUDED.total_steps,
                 total_activities  = EXCLUDED.total_activities,
                 key_insights      = EXCLUDED.key_insights,
-                recommendations   = EXCLUDED.recommendations
+                recommendations   = EXCLUDED.recommendations,
+                created_at        = CURRENT_TIMESTAMP
         """, (
             week_start,
             stats[0], stats[1], stats[2], stats[3], stats[4],
             stats[5], stats[6], activity_count,
-            insights, "",
+            insights, concise,
         ))
 
         cur.close()
         conn.close()
         log.info("Insights saved for week %s", week_start)
+
+    def _build_concise_summary(self, insights: str) -> str:
+        """Create a short, human-friendly summary for UI cards."""
+        text = str(insights or "").replace("\r", "").strip()
+        if not text:
+            return "No insight text generated in this run."
+
+        picked = []
+        for raw in text.splitlines():
+            line = raw.strip().lstrip("-* ").strip()
+            if not line:
+                continue
+            low = line.lower()
+            if any(
+                token in low
+                for token in (
+                    "should",
+                    "recommend",
+                    "focus",
+                    "avoid",
+                    "increase",
+                    "decrease",
+                    "sleep",
+                    "stress",
+                    "recovery",
+                    "readiness",
+                    "load",
+                    "battery",
+                )
+            ):
+                if len(line) > 180:
+                    line = line[:177] + "..."
+                picked.append(line)
+            if len(picked) >= 3:
+                break
+
+        if not picked:
+            sentence = text.replace("\n", " ")
+            if len(sentence) > 320:
+                sentence = sentence[:317] + "..."
+            return sentence
+
+        return "\n".join(f"- {line}" for line in picked)
 
     # ─── Step 5: Email ────────────────────────────────────────
 

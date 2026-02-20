@@ -25,6 +25,12 @@ Updated: 2026-02-20
 | 17 | Investigate live chat fallback and patch backend AI import path | DONE | Updated `src/api.py` chat endpoint to import tools via `src.enhanced_agents` first (with fallback), fixing module-path issues in Heroku runtime. |
 | 18 | Fix agent DB reachability in Heroku chat path | DONE | Added DB URL normalization + automatic `DATABASE_URL` -> `POSTGRES_CONNECTION_STRING` env alias in `src/api.py` so CrewAI tools can connect consistently. |
 | 19 | Verify production chat and insights quality after deploy | DONE | Live website now returns valid AI responses (not fallback) and renders insights sections correctly. |
+| 20 | Redesign Agent Insights to be concise and actually insightful | DONE | Frontend now renders compact action bullets instead of raw log-style blocks; backend now prefers concise recommendation text in `/api/v1/insights/latest`. |
+| 21 | Remove Streamlit-migration wording and align page content to project narrative | DONE | Updated hero/footer copy in frontend to project-centric health intelligence language. |
+| 22 | Make correlation heatmap explain meaning (not just color) | DONE | Added textual interpretation summary + per-cell meaning tooltips with direction/strength (`r`) in correlations view. |
+| 23 | Fix window dropdown white-on-white unreadable options | DONE | Styled select/option foreground/background for readable contrast in analytics toolbar. |
+| 24 | Add workout progress sport filters (running/cycling/swimming/skiing/gym) | DONE | Added sport filter UI and backend `sport` query support in `/api/v1/workouts/progress`; trends/workout summaries now scope to selected sport. |
+| 25 | Expand matrices (including Pearson + Markov) for cross-activity effects | DONE | Added backend `/api/v1/analytics/cross-effects` with next-day sport-to-metric Pearson effects and readiness-state Markov transitions; integrated key effects into correlations UI summary. |
 
 ## Environment / Access Notes
 
@@ -34,4 +40,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Monitor upcoming scheduler runs and confirm bulk import path after next Garmin export email.
+- Validate live dashboard behavior after deploys and tune thresholds/wording for snapshot/trend/correlation summaries based on your preference.

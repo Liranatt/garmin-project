@@ -131,6 +131,113 @@ def _window_note(values: List[float], higher_is_better: bool = True) -> str:
     return f"{direction} {abs(pct):.1f}% between early and recent window."
 
 
+def _concise_insight_text(text: str, max_items: int = 3) -> str:
+    cleaned = _text(text)
+    if not cleaned:
+        return ""
+    lines: List[str] = []
+    for raw in cleaned.splitlines():
+        line = raw.strip().lstrip("-* ").strip()
+        if not line:
+            continue
+        low = line.lower()
+        if any(
+            token in low
+            for token in (
+                "recommend",
+                "should",
+                "focus",
+                "avoid",
+                "increase",
+                "decrease",
+                "stress",
+                "sleep",
+                "recovery",
+                "load",
+                "readiness",
+            )
+        ):
+            lines.append(line)
+    if not lines:
+        sentence = cleaned.replace("\n", " ").strip()
+        return sentence[:240] + ("..." if len(sentence) > 240 else "")
+    unique: List[str] = []
+    for line in lines:
+        marker = line.lower()[:36]
+        if any(marker in u.lower() or u.lower() in marker for u in unique):
+            continue
+        unique.append(line)
+        if len(unique) >= max_items:
+            break
+    return "\n".join(f"- {line}" for line in unique)
+
+
+def _matches_sport(activity_type: str, sport: str) -> bool:
+    s = _text(sport).lower().strip()
+    if s in ("", "all"):
+        return True
+    val = _text(activity_type).lower()
+    buckets = {
+        "running": ("run", "jog"),
+        "cycling": ("cycl", "bike"),
+        "swimming": ("swim"),
+        "skiing": ("ski",),
+        "gym": ("strength", "weight", "gym", "crossfit", "workout"),
+    }
+    tokens = buckets.get(s, (s,))
+    return any(t in val for t in tokens)
+
+
+def _sport_bucket(activity_type: str) -> str:
+    val = _text(activity_type).lower()
+    if any(t in val for t in ("run", "jog")):
+        return "running"
+    if any(t in val for t in ("cycl", "bike")):
+        return "cycling"
+    if "swim" in val:
+        return "swimming"
+    if "ski" in val:
+        return "skiing"
+    if any(t in val for t in ("strength", "weight", "gym", "crossfit", "workout")):
+        return "gym"
+    if any(t in val for t in ("basketball", "bball")):
+        return "basketball"
+    return "other"
+
+
+def _pearson(xs: List[float], ys: List[float]) -> Optional[float]:
+    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    if len(pairs) < 5:
+        return None
+    x_vals = [p[0] for p in pairs]
+    y_vals = [p[1] for p in pairs]
+    x_mean = sum(x_vals) / len(x_vals)
+    y_mean = sum(y_vals) / len(y_vals)
+    num = 0.0
+    den_x = 0.0
+    den_y = 0.0
+    for x, y in pairs:
+        dx = x - x_mean
+        dy = y - y_mean
+        num += dx * dy
+        den_x += dx * dx
+        den_y += dy * dy
+    if den_x == 0 or den_y == 0:
+        return None
+    return num / (den_x ** 0.5 * den_y ** 0.5)
+
+
+def _readiness_state(value: Any) -> Optional[str]:
+    v = _num(value)
+    if v is None:
+        return None
+    if v >= 70:
+        return "high"
+    if v >= 50:
+        return "medium"
+    return "low"
+
+
 app = FastAPI(title="Garmin Health API", version="1.0.0")
 
 _origin_env = os.getenv("FRONTEND_ORIGINS", "")
@@ -161,6 +268,7 @@ def _build_snapshot_payload(row: Dict[str, Any], field_map: Dict[str, Optional[s
     bb_col = field_map["battery"]
     stress_col = field_map["stress"]
     load_col = field_map["load"]
+    readiness_col = field_map["readiness"]
 
     timestamp = _pick_row_value(row, date_col or "")
     resting_hr = _num(_pick_row_value(row, rhr_col or ""))
@@ -169,6 +277,7 @@ def _build_snapshot_payload(row: Dict[str, Any], field_map: Dict[str, Optional[s
     battery = _num(_pick_row_value(row, bb_col or ""))
     stress = _num(_pick_row_value(row, stress_col or ""))
     load = _num(_pick_row_value(row, load_col or ""))
+    readiness = _num(_pick_row_value(row, readiness_col or ""))
 
     snapshot = {
         "resting_hr": resting_hr,
@@ -191,6 +300,9 @@ def _build_snapshot_payload(row: Dict[str, Any], field_map: Dict[str, Optional[s
         "load": load,
         "acute_load": load,
         "seven_day_load": load,
+        "training_readiness": readiness,
+        "readiness": readiness,
+        "readiness_score": readiness,
         "timestamp": timestamp,
         "created_at": timestamp,
         "date": timestamp,
@@ -209,6 +321,7 @@ def _build_history_rows(rows: List[Dict[str, Any]], field_map: Dict[str, Optiona
         stress = _num(_pick_row_value(row, field_map["stress"] or ""))
         battery = _num(_pick_row_value(row, field_map["battery"] or ""))
         load = _num(_pick_row_value(row, field_map["load"] or ""))
+        readiness = _num(_pick_row_value(row, field_map["readiness"] or ""))
 
         out.append(
             {
@@ -236,6 +349,9 @@ def _build_history_rows(rows: List[Dict[str, Any]], field_map: Dict[str, Optiona
                 "daily_load_acute": load,
                 "load": load,
                 "acute_load": load,
+                "training_readiness": readiness,
+                "readiness": readiness,
+                "readiness_score": readiness,
             }
         )
     return out
@@ -373,6 +489,7 @@ def snapshot_latest() -> Dict[str, Any]:
             "battery": _first_existing("daily_metrics", ["bb_peak", "bb_charged", "bb_low"]),
             "stress": _first_existing("daily_metrics", ["stress_level", "avg_stress_level"]),
             "load": _first_existing("daily_metrics", ["tr_acute_load", "daily_load_acute", "bb_drained"]),
+            "readiness": _first_existing("daily_metrics", ["training_readiness", "readiness"]),
         }
 
         select_cols = [c for c in field_map.values() if c]
@@ -410,6 +527,7 @@ def metrics_history(days: int = Query(default=60, ge=1, le=3650)) -> Dict[str, A
             "stress": _first_existing("daily_metrics", ["stress_level", "avg_stress_level"]),
             "battery": _first_existing("daily_metrics", ["bb_peak", "bb_charged", "bb_low"]),
             "load": _first_existing("daily_metrics", ["daily_load_acute", "tr_acute_load", "bb_drained"]),
+            "readiness": _first_existing("daily_metrics", ["training_readiness", "readiness"]),
         }
         select_cols = [c for c in field_map.values() if c]
         rows = _fetch_all(
@@ -428,7 +546,10 @@ def metrics_history(days: int = Query(default=60, ge=1, le=3650)) -> Dict[str, A
 
 
 @app.get("/api/v1/workouts/progress")
-def workouts_progress(days: int = Query(default=30, ge=1, le=3650)) -> Dict[str, Any]:
+def workouts_progress(
+    days: int = Query(default=30, ge=1, le=3650),
+    sport: str = Query(default="all"),
+) -> Dict[str, Any]:
     try:
         date_col = _first_existing("activities", ["date", "start_time_local", "start_time_gmt"])
         if not date_col:
@@ -512,8 +633,182 @@ def workouts_progress(days: int = Query(default=30, ge=1, le=3650)) -> Dict[str,
             }
             items.append(item)
 
-        summary = _workout_summary(items)
-        return {"data": items, "summary": summary}
+        filtered = [r for r in items if _matches_sport(_text(r.get("activity_type")), sport)]
+        summary = _workout_summary(filtered)
+        return {"data": filtered, "summary": summary, "selected_sport": sport}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/analytics/cross-effects")
+def analytics_cross_effects(days: int = Query(default=90, ge=14, le=3650)) -> Dict[str, Any]:
+    """Cross-activity effect estimates (Pearson + readiness-state transitions)."""
+    try:
+        act_date_col = _first_existing("activities", ["date", "start_time_local", "start_time_gmt"])
+        dm_date_col = _first_existing("daily_metrics", ["date", "created_at"])
+        if not act_date_col or not dm_date_col:
+            return {"pearson_effects": [], "markov_effects": [], "summary": "Missing required date columns."}
+
+        act_load_col = _first_existing("activities", ["training_load"])
+        act_duration_col = _first_existing("activities", ["duration_sec", "elapsed_duration_sec", "moving_duration_sec"])
+        act_type_col = _first_existing("activities", ["activity_type", "sport_type"])
+        dm_cols = {
+            "readiness": _first_existing("daily_metrics", ["training_readiness", "readiness"]),
+            "sleep": _first_existing("daily_metrics", ["sleep_score"]),
+            "stress": _first_existing("daily_metrics", ["stress_level", "avg_stress_level"]),
+            "hrv": _first_existing("daily_metrics", ["hrv_last_night", "tr_hrv_weekly_avg", "hrv_weekly_avg"]),
+            "rhr": _first_existing("daily_metrics", ["resting_hr"]),
+        }
+        if not act_type_col:
+            return {"pearson_effects": [], "markov_effects": [], "summary": "Activity type column missing."}
+
+        act_date_expr = "date" if act_date_col == "date" else f"({act_date_col})::timestamp::date"
+        act_select = [f"{act_date_expr} AS d", f"{act_type_col} AS activity_type"]
+        if act_load_col:
+            act_select.append(f"{act_load_col} AS training_load")
+        if act_duration_col:
+            act_select.append(f"{act_duration_col} AS duration_sec")
+        act_rows = _fetch_all(
+            f"""
+            SELECT {", ".join(act_select)}
+            FROM activities
+            WHERE {act_date_expr} >= CURRENT_DATE - (%s * INTERVAL '1 day')
+            """,
+            (days + 2,),
+        )
+
+        dm_select = [f"{dm_date_col} AS d"]
+        for alias, col in dm_cols.items():
+            if col:
+                dm_select.append(f"{col} AS {alias}")
+        dm_rows = _fetch_all(
+            f"""
+            SELECT {", ".join(dm_select)}
+            FROM daily_metrics
+            WHERE {dm_date_col} >= CURRENT_DATE - (%s * INTERVAL '1 day')
+            ORDER BY {dm_date_col} ASC
+            """,
+            (days + 2,),
+        )
+
+        # Aggregate activity stimulus per day and sport bucket.
+        stimulus_by_day: Dict[str, Dict[str, float]] = {}
+        for row in act_rows:
+            day = _parse_activity_date(row.get("d"))
+            if not day:
+                continue
+            bucket = _sport_bucket(_text(row.get("activity_type")))
+            load = _num(row.get("training_load"))
+            if load is None:
+                duration = _num(row.get("duration_sec"))
+                load = (duration / 60.0) if duration is not None else None
+            if load is None:
+                continue
+            stimulus_by_day.setdefault(day, {})
+            stimulus_by_day[day][bucket] = stimulus_by_day[day].get(bucket, 0.0) + float(load)
+
+        metrics_by_day: Dict[str, Dict[str, Optional[float]]] = {}
+        for row in dm_rows:
+            day = _parse_activity_date(row.get("d"))
+            if not day:
+                continue
+            metrics_by_day[day] = {
+                "readiness": _num(row.get("readiness")),
+                "sleep": _num(row.get("sleep")),
+                "stress": _num(row.get("stress")),
+                "hrv": _num(row.get("hrv")),
+                "rhr": _num(row.get("rhr")),
+            }
+
+        days_sorted = sorted(metrics_by_day.keys())
+        if len(days_sorted) < 6:
+            return {"pearson_effects": [], "markov_effects": [], "summary": "Not enough daily rows for cross-effects."}
+
+        buckets = ["running", "cycling", "swimming", "skiing", "gym", "basketball"]
+        outcomes = [
+            ("readiness", "Training Readiness"),
+            ("sleep", "Sleep Score"),
+            ("stress", "Stress"),
+            ("hrv", "HRV"),
+            ("rhr", "Resting HR"),
+        ]
+
+        pearson_effects: List[Dict[str, Any]] = []
+        for bucket in buckets:
+            x_vals: List[float] = []
+            outcome_series: Dict[str, List[Optional[float]]] = {k: [] for k, _ in outcomes}
+            for idx in range(len(days_sorted) - 1):
+                day = days_sorted[idx]
+                nxt = days_sorted[idx + 1]
+                x = stimulus_by_day.get(day, {}).get(bucket, 0.0)
+                x_vals.append(float(x))
+                for outcome_key, _ in outcomes:
+                    outcome_series[outcome_key].append(metrics_by_day.get(nxt, {}).get(outcome_key))
+
+            for outcome_key, outcome_label in outcomes:
+                corr = _pearson(x_vals, outcome_series[outcome_key])
+                if corr is None:
+                    continue
+                pearson_effects.append(
+                    {
+                        "sport": bucket,
+                        "outcome": outcome_key,
+                        "outcome_label": outcome_label,
+                        "r": round(float(corr), 4),
+                        "window_days": days,
+                        "mode": "next_day",
+                    }
+                )
+        pearson_effects.sort(key=lambda item: abs(item["r"]), reverse=True)
+
+        # Markov-style readiness transitions conditioned on sport stimulus.
+        markov_counts: Dict[str, Dict[str, Dict[str, int]]] = {}
+        for idx in range(len(days_sorted) - 1):
+            day = days_sorted[idx]
+            nxt = days_sorted[idx + 1]
+            from_state = _readiness_state(metrics_by_day.get(day, {}).get("readiness"))
+            to_state = _readiness_state(metrics_by_day.get(nxt, {}).get("readiness"))
+            if not from_state or not to_state:
+                continue
+            for bucket, load in stimulus_by_day.get(day, {}).items():
+                if load <= 0:
+                    continue
+                markov_counts.setdefault(bucket, {}).setdefault(from_state, {})
+                markov_counts[bucket][from_state][to_state] = markov_counts[bucket][from_state].get(to_state, 0) + 1
+
+        markov_effects: List[Dict[str, Any]] = []
+        for bucket, from_map in markov_counts.items():
+            for from_state, to_map in from_map.items():
+                total = sum(to_map.values())
+                if total <= 0:
+                    continue
+                for to_state, count in to_map.items():
+                    markov_effects.append(
+                        {
+                            "sport": bucket,
+                            "from_state": from_state,
+                            "to_state": to_state,
+                            "probability": round(count / total, 4),
+                            "count": count,
+                        }
+                    )
+        markov_effects.sort(key=lambda item: item["probability"], reverse=True)
+
+        top = pearson_effects[:3]
+        if top:
+            summary = " | ".join(
+                f"{e['sport']} -> {e['outcome_label']} ({'+' if e['r'] >= 0 else ''}{e['r']:.2f})"
+                for e in top
+            )
+        else:
+            summary = "No reliable cross-activity Pearson effects yet."
+
+        return {
+            "pearson_effects": pearson_effects[:18],
+            "markov_effects": markov_effects[:18],
+            "summary": summary,
+            "window_days": days,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -526,7 +821,10 @@ def insights_latest() -> Dict[str, Any]:
         if weekly_cols and "week_start_date" in weekly_cols:
             key_text_col = "key_insights" if "key_insights" in weekly_cols else None
             rec_col = "recommendations" if "recommendations" in weekly_cols else None
+            created_col = "created_at" if "created_at" in weekly_cols else None
             select_parts = ["week_start_date"]
+            if created_col:
+                select_parts.append(created_col)
             if key_text_col:
                 select_parts.append(key_text_col)
             if rec_col:
@@ -535,14 +833,15 @@ def insights_latest() -> Dict[str, Any]:
                 f"""
                 SELECT {", ".join(select_parts)}
                 FROM weekly_summaries
-                ORDER BY week_start_date DESC
+                ORDER BY {created_col if created_col else "week_start_date"} DESC
                 LIMIT 5
                 """
             )
             for r in rows:
                 summary_text = _text(r.get(key_text_col)) if key_text_col else ""
                 rec_text = _text(r.get(rec_col)) if rec_col else ""
-                text = summary_text or rec_text
+                text = rec_text or _concise_insight_text(summary_text)
+                ts = r.get(created_col) if created_col else r.get("week_start_date")
                 if text:
                     insights.append(
                         {
@@ -553,10 +852,10 @@ def insights_latest() -> Dict[str, Any]:
                             "agent": "synthesizer",
                             "agent_name": "synthesizer",
                             "source": "weekly_summaries",
-                            "timestamp": r.get("week_start_date"),
-                            "created_at": r.get("week_start_date"),
-                            "detail": rec_text or summary_text,
-                            "content": rec_text or summary_text,
+                            "timestamp": ts,
+                            "created_at": ts,
+                            "detail": summary_text or rec_text,
+                            "content": summary_text or rec_text,
                         }
                     )
 
