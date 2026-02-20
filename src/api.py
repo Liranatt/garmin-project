@@ -41,6 +41,13 @@ def _db_url() -> str:
     return db_url
 
 
+if not os.getenv("POSTGRES_CONNECTION_STRING"):
+    resolved_db_url = _db_url()
+    if resolved_db_url:
+        # CrewAI SQL tools in enhanced_agents read this env var directly.
+        os.environ["POSTGRES_CONNECTION_STRING"] = resolved_db_url
+
+
 def get_db_connection():
     db_url = _db_url()
     if not db_url:
