@@ -13,6 +13,7 @@ from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
 load_dotenv()
+DATA_START_DATE = os.getenv("DATA_START_DATE", "2026-02-01")
 
 app = FastAPI(title="Garmin Health API")
 
@@ -230,9 +231,18 @@ def get_metrics_history(days: int = 90):
                            daily_load_acute AS training_load
                     FROM daily_metrics
                     WHERE date >= CURRENT_DATE - (%s * INTERVAL '1 day')
+                      AND date >= %s::date
+                      AND (
+                          resting_hr IS NOT NULL
+                          OR hrv_last_night IS NOT NULL
+                          OR sleep_score IS NOT NULL
+                          OR stress_level IS NOT NULL
+                          OR bb_peak IS NOT NULL
+                          OR daily_load_acute IS NOT NULL
+                      )
                     ORDER BY date ASC
                     """,
-                    (safe_days,),
+                    (safe_days, DATA_START_DATE),
                 )
                 rows = cur.fetchall()
 
