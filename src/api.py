@@ -284,7 +284,16 @@ def chat_endpoint(query: ChatQuery):
     try:
         ai_reply = _ai_chat_reply(message)
         if ai_reply:
-            return {"answer": ai_reply}
+            lower = ai_reply.lower()
+            failure_markers = [
+                "cannot connect",
+                "unable to connect",
+                "database connection error",
+                "sql error",
+                "connection error",
+            ]
+            if not any(marker in lower for marker in failure_markers):
+                return {"answer": ai_reply}
 
         return {"answer": _deterministic_chat_reply(message)}
     except Exception as exc:
