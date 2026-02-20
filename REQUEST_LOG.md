@@ -32,6 +32,7 @@ Updated: 2026-02-20
 | 24 | Add workout progress sport filters (running/cycling/swimming/skiing/gym) | DONE | Added sport filter UI and backend `sport` query support in `/api/v1/workouts/progress`; trends/workout summaries now scope to selected sport. |
 | 25 | Expand matrices (including Pearson + Markov) for cross-activity effects | DONE | Added backend `/api/v1/analytics/cross-effects` with next-day sport-to-metric Pearson effects and readiness-state Markov transitions; integrated key effects into correlations UI summary. |
 | 26 | Finish remaining strict insight schema + add dedicated tests, then push | DONE | Enforced structured insight fields (`headline`, `what_changed`, `why_it_matters`, `next_24_48h`, 3 bullets <=280 chars), updated agent output guidance, and added `tests/test_api_contract.py` for snapshot/workout/cross-effects/insight contracts. |
+| 27 | Verify deployed Heroku API against new contracts | DONE | Live checks on 2026-02-20 passed for `/health-check`, snapshot/history/workouts/cross-effects/insights endpoints and `POST /api/v1/chat` (all HTTP 200 with expected structured fields). |
 
 ## Environment / Access Notes
 
@@ -41,4 +42,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Deploy latest backend/frontend commits and validate live UI wording/threshold tuning from real daily data.
+- Tune live wording/thresholds from real data feedback (snapshot/trends/correlations/insights) after observing 1-2 more daily sync cycles.
