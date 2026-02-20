@@ -20,6 +20,7 @@ Updated: 2026-02-20
 | 12 | Move bulk import automation to Heroku execution | DONE | Removed bulk-import step from GitHub Actions, added Heroku process commands in `Procfile`, and documented Heroku Scheduler setup in `README.md`. |
 | 13 | Move scheduling to GitHub Actions (weekly reminder + daily import poller) | DONE | Added `.github/workflows/weekly_export_reminder.yml` and `.github/workflows/daily_bulk_import.yml`; updated README schedule docs. |
 | 14 | Confirm backend still matches frontend integration contract | DONE | Local route smoke-check returned HTTP 200 on all contract endpoints and chat response alias fields. |
+| 15 | Fix non-fast-forward GitHub push on `main` | DONE | Rebased local commits onto `origin/main`, resolved `src/api.py` conflict, and pushed successfully (`81ff9d9`). |
 
 ## Environment / Access Notes
 
@@ -29,4 +30,4 @@ Updated: 2026-02-20
 
 ## Next To-Do
 
-- Push latest commit to GitHub/Heroku and validate first scheduled GitHub Actions runs (weekly reminder workflow + daily bulk import poller).
+- Validate first scheduled GitHub Actions runs (weekly reminder workflow + daily bulk import poller) and confirm Heroku deploy health endpoint.
