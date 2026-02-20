@@ -1,148 +1,613 @@
+"""
+FastAPI backend contract for gps_presentation frontend integration.
+"""
+
 from __future__ import annotations
 
+import logging
 import os
-from contextlib import closing
-from datetime import datetime
-from typing import Any
+from datetime import date, datetime
+from decimal import Decimal
+from functools import lru_cache
+from typing import Any, Dict, List, Optional
 
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from psycopg2.extras import RealDictCursor
-from dotenv import load_dotenv
 
 load_dotenv()
-DATA_START_DATE = os.getenv("DATA_START_DATE", "2026-02-01")
 
-app = FastAPI(title="Garmin Health API")
+log = logging.getLogger("api")
+
+
+def _conn_str() -> str:
+    return os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
+
+
+def _to_jsonable(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _num(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _text(value: Any) -> str:
+    return str(value) if value is not None else ""
+
+
+def _fetch_all(query: str, params: Optional[tuple] = None) -> List[Dict[str, Any]]:
+    cs = _conn_str()
+    if not cs:
+        raise RuntimeError("POSTGRES_CONNECTION_STRING is not set")
+    conn = psycopg2.connect(cs)
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params or ())
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                out.append({k: _to_jsonable(v) for k, v in dict(row).items()})
+            return out
+    finally:
+        conn.close()
+
+
+def _fetch_one(query: str, params: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
+    rows = _fetch_all(query, params=params)
+    return rows[0] if rows else None
+
+
+@lru_cache(maxsize=64)
+def _table_columns(table_name: str) -> List[str]:
+    rows = _fetch_all(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position
+        """,
+        (table_name,),
+    )
+    return [r["column_name"] for r in rows]
+
+
+def _first_existing(table_name: str, candidates: List[str]) -> Optional[str]:
+    cols = set(_table_columns(table_name))
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
+def _pick_row_value(row: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key and row.get(key) is not None:
+            return row.get(key)
+    return None
+
+
+def _window_note(values: List[float], higher_is_better: bool = True) -> str:
+    clean = [v for v in values if v is not None]
+    if len(clean) < 4:
+        return "Not enough data points yet."
+    mid = len(clean) // 2
+    first = sum(clean[:mid]) / max(mid, 1)
+    second = sum(clean[mid:]) / max(len(clean) - mid, 1)
+    if first == 0:
+        return "Not enough data points yet."
+    pct = ((second - first) / abs(first)) * 100.0
+    improving = pct > 0 if higher_is_better else pct < 0
+    direction = "improved" if improving else "declined"
+    return f"{direction} {abs(pct):.1f}% between early and recent window."
+
+
+app = FastAPI(title="Garmin Health API", version="1.0.0")
+
+_origin_env = os.getenv("FRONTEND_ORIGINS", "")
+_origins = [o.strip() for o in _origin_env.split(",") if o.strip()] or [
+    "https://liranattar.dev",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://liranattar.dev",
-        "https://www.liranattar.dev",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
 
-def _db_url() -> str:
-    db_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_CONNECTION_STRING") or ""
-    db_url = db_url.strip()
-    # Heroku may provide postgres://; psycopg2 prefers postgresql://
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    return db_url
+class ChatRequest(BaseModel):
+    message: str
 
 
-if not os.getenv("POSTGRES_CONNECTION_STRING"):
-    resolved_db_url = _db_url()
-    if resolved_db_url:
-        # CrewAI SQL tools in enhanced_agents read this env var directly.
-        os.environ["POSTGRES_CONNECTION_STRING"] = resolved_db_url
+def _build_snapshot_payload(row: Dict[str, Any], field_map: Dict[str, Optional[str]]) -> Dict[str, Any]:
+    date_col = field_map["date"]
+    rhr_col = field_map["rhr"]
+    hrv_col = field_map["hrv"]
+    sleep_col = field_map["sleep"]
+    bb_col = field_map["battery"]
+    stress_col = field_map["stress"]
+    load_col = field_map["load"]
+
+    timestamp = _pick_row_value(row, date_col or "")
+    resting_hr = _num(_pick_row_value(row, rhr_col or ""))
+    hrv = _num(_pick_row_value(row, hrv_col or ""))
+    sleep = _num(_pick_row_value(row, sleep_col or ""))
+    battery = _num(_pick_row_value(row, bb_col or ""))
+    stress = _num(_pick_row_value(row, stress_col or ""))
+    load = _num(_pick_row_value(row, load_col or ""))
+
+    snapshot = {
+        "resting_hr": resting_hr,
+        "restingHeartRate": resting_hr,
+        "rhr": resting_hr,
+        "resting_hr_avg": resting_hr,
+        "hrv": hrv,
+        "hrv_ms": hrv,
+        "rmssd": hrv,
+        "sleep_score": sleep,
+        "sleepScore": sleep,
+        "sleep": sleep,
+        "body_battery": battery,
+        "bodyBattery": battery,
+        "battery": battery,
+        "stress": stress,
+        "stress_score": stress,
+        "avg_stress": stress,
+        "training_load": load,
+        "load": load,
+        "acute_load": load,
+        "seven_day_load": load,
+        "timestamp": timestamp,
+        "created_at": timestamp,
+        "date": timestamp,
+        "as_of": timestamp,
+    }
+    return snapshot
 
 
-def get_db_connection():
-    db_url = _db_url()
-    if not db_url:
-        raise RuntimeError("DATABASE_URL / POSTGRES_CONNECTION_STRING is not configured")
-    return psycopg2.connect(db_url)
+def _build_history_rows(rows: List[Dict[str, Any]], field_map: Dict[str, Optional[str]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        date_val = _pick_row_value(row, field_map["date"] or "")
+        rhr = _num(_pick_row_value(row, field_map["rhr"] or ""))
+        hrv = _num(_pick_row_value(row, field_map["hrv"] or ""))
+        sleep = _num(_pick_row_value(row, field_map["sleep"] or ""))
+        stress = _num(_pick_row_value(row, field_map["stress"] or ""))
+        battery = _num(_pick_row_value(row, field_map["battery"] or ""))
+        load = _num(_pick_row_value(row, field_map["load"] or ""))
 
-
-def _to_serializable_snapshot(row: dict[str, Any]) -> dict[str, Any]:
-    out = dict(row)
-    if "timestamp" in out and out["timestamp"] is not None:
-        out["timestamp"] = str(out["timestamp"])
+        out.append(
+            {
+                "date": date_val,
+                "timestamp": date_val,
+                "as_of": date_val,
+                "resting_hr": rhr,
+                "restingHr": rhr,
+                "rhr": rhr,
+                "hrv": hrv,
+                "hrv_last_night": hrv,
+                "hrv_ms": hrv,
+                "rmssd": hrv,
+                "sleep_score": sleep,
+                "sleepScore": sleep,
+                "sleep": sleep,
+                "stress": stress,
+                "stress_level": stress,
+                "stress_score": stress,
+                "avg_stress": stress,
+                "battery": battery,
+                "body_battery": battery,
+                "bb_peak": battery,
+                "training_load": load,
+                "daily_load_acute": load,
+                "load": load,
+                "acute_load": load,
+            }
+        )
     return out
 
 
-def _safe_text(value: Any) -> str:
+def _parse_activity_date(value: Any) -> Any:
     if value is None:
-        return ""
-    return str(value).strip()
+        return None
+    s = str(value)
+    return s[:10] if len(s) >= 10 else s
 
 
-def _deterministic_chat_reply(message: str) -> str:
-    lower_q = message.lower()
-    focus = "general"
-    if any(k in lower_q for k in ["sleep", "rem", "deep"]):
-        focus = "sleep"
-    elif any(k in lower_q for k in ["stress", "recover", "readiness"]):
-        focus = "recovery"
-    elif any(k in lower_q for k in ["train", "workout", "load", "performance"]):
-        focus = "training"
+def _speed_to_kph(value: Any) -> Optional[float]:
+    v = _num(value)
+    if v is None:
+        return None
+    # Garmin exports are usually m/s; convert if plausible.
+    if 0 < v < 25:
+        return round(v * 3.6, 3)
+    return round(v, 3)
 
-    try:
-        with closing(get_db_connection()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT date AS timestamp,
-                           resting_hr,
-                           hrv_last_night AS hrv,
-                           sleep_score,
-                           bb_peak AS battery,
-                           stress_level AS stress,
-                           daily_load_acute AS load
-                    FROM daily_metrics
-                    ORDER BY date DESC
-                    LIMIT 1
-                    """
-                )
-                row = cur.fetchone()
-    except Exception:
-        row = None
 
-    if row:
-        summary = (
-            f"Latest snapshot: RHR {row.get('resting_hr')}, "
-            f"HRV {row.get('hrv')}, Sleep {row.get('sleep_score')}, "
-            f"Battery {row.get('battery')}, Stress {row.get('stress')}, "
-            f"Load {row.get('load')}."
+def _workout_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    types = sorted(
+        {
+            _text(r.get("activity_type"))
+            for r in rows
+            if r.get("activity_type") not in (None, "")
+        }
+    )
+
+    running = [r for r in rows if "run" in _text(r.get("activity_type")).lower()]
+    running_speeds = [_num(r.get("speed_kph")) for r in running]
+    running_cadence = [_num(r.get("avg_cadence")) for r in running]
+
+    strength = [
+        r
+        for r in rows
+        if any(
+            token in _text(r.get("activity_type")).lower()
+            for token in ("strength", "weight", "gym", "crossfit", "workout")
+        )
+    ]
+    strength_load = [_num(r.get("training_load")) for r in strength]
+    strength_duration = [_num(r.get("duration_min")) for r in strength]
+
+    if any(v is not None for v in strength_load):
+        strength_note = "Strength load " + _window_note(
+            [v for v in strength_load if v is not None], higher_is_better=True
+        )
+    elif any(v is not None for v in strength_duration):
+        strength_note = "Strength duration " + _window_note(
+            [v for v in strength_duration if v is not None], higher_is_better=True
         )
     else:
-        summary = "No latest snapshot row is available yet."
+        strength_note = "No strength-specific signal found in available columns."
 
-    if focus == "sleep":
-        return f"{summary} For sleep: keep timing consistent and reduce late-night training intensity."
-    if focus == "recovery":
-        return f"{summary} For recovery: aim for lower stress trend with stable sleep score and HRV."
-    if focus == "training":
-        return f"{summary} For training: increase load gradually and verify next-day recovery response."
-    return f"{summary} Ask specifically about sleep, stress, recovery, or training for a focused analysis."
+    running_note = "Not enough running data points yet."
+    if any(v is not None for v in running_speeds):
+        running_note = "Running speed " + _window_note(
+            [v for v in running_speeds if v is not None], higher_is_better=True
+        )
+    if any(v is not None for v in running_cadence):
+        running_note += " Running cadence " + _window_note(
+            [v for v in running_cadence if v is not None], higher_is_better=True
+        )
+
+    return {
+        "activity_types": types,
+        "strength_proxy_trend": {"note": strength_note},
+        "running_trend": {"note": running_note},
+    }
 
 
-def _ai_chat_reply(message: str) -> str | None:
-    # Keep API boot stable even if AI stack has dependency/runtime issues.
-    if not os.getenv("GOOGLE_API_KEY", "").strip():
-        return None
-
+def _fallback_chat(message: str) -> str:
     try:
-        from crewai import Agent, Crew, Process, Task
-        from src.enhanced_agents import (
-            _get_llm,
-            run_sql_query,
-            calculate_correlation,
-            find_best_days,
-            analyze_pattern,
+        row = _fetch_one(
+            """
+            SELECT
+                AVG(resting_hr) AS avg_rhr,
+                AVG(hrv_last_night) AS avg_hrv,
+                AVG(sleep_score) AS avg_sleep,
+                AVG(stress_level) AS avg_stress
+            FROM daily_metrics
+            WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+            """
+        ) or {}
+        return (
+            "AI chat model is unavailable right now. "
+            f"Last 7d averages: RHR={_num(row.get('avg_rhr'))}, "
+            f"HRV={_num(row.get('avg_hrv'))}, "
+            f"Sleep={_num(row.get('avg_sleep'))}, "
+            f"Stress={_num(row.get('avg_stress'))}. "
+            f"Your question was: {message}"
         )
     except Exception:
-        return None
+        return (
+            "AI chat model is unavailable right now and database summary could not be loaded. "
+            f"Your question was: {message}"
+        )
+
+
+@app.get("/")
+def root() -> Dict[str, Any]:
+    return {"service": "garmin-health-api", "status": "ok"}
+
+
+@app.get("/health-check")
+def health_check() -> JSONResponse:
+    try:
+        _fetch_one("SELECT 1 AS ok")
+        return JSONResponse({"status": "Online", "message": "Online"})
+    except Exception as e:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "Waking up",
+                "message": f"Service starting or DB unavailable: {e}",
+            },
+        )
+
+
+@app.get("/api/v1/snapshot/latest")
+def snapshot_latest() -> Dict[str, Any]:
+    try:
+        date_col = _first_existing("daily_metrics", ["date", "created_at"])
+        if not date_col:
+            return {"snapshot": {}, "data": {}}
+
+        field_map = {
+            "date": date_col,
+            "rhr": _first_existing("daily_metrics", ["resting_hr"]),
+            "hrv": _first_existing("daily_metrics", ["hrv_last_night", "tr_hrv_weekly_avg", "hrv_weekly_avg"]),
+            "sleep": _first_existing("daily_metrics", ["sleep_score"]),
+            "battery": _first_existing("daily_metrics", ["bb_peak", "bb_charged", "bb_low"]),
+            "stress": _first_existing("daily_metrics", ["stress_level", "avg_stress_level"]),
+            "load": _first_existing("daily_metrics", ["tr_acute_load", "daily_load_acute", "bb_drained"]),
+        }
+
+        select_cols = [c for c in field_map.values() if c]
+        row = _fetch_one(
+            f"""
+            SELECT {", ".join(dict.fromkeys(select_cols))}
+            FROM daily_metrics
+            ORDER BY {date_col} DESC
+            LIMIT 1
+            """
+        )
+        if not row:
+            return {"snapshot": {}, "data": {}}
+
+        snapshot = _build_snapshot_payload(row, field_map)
+        out = {"snapshot": snapshot, "data": snapshot}
+        out.update(snapshot)
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/metrics/history")
+def metrics_history(days: int = Query(default=60, ge=1, le=3650)) -> Dict[str, Any]:
+    try:
+        date_col = _first_existing("daily_metrics", ["date", "created_at"])
+        if not date_col:
+            return {"data": [], "history": []}
+
+        field_map = {
+            "date": date_col,
+            "rhr": _first_existing("daily_metrics", ["resting_hr"]),
+            "hrv": _first_existing("daily_metrics", ["hrv_last_night", "tr_hrv_weekly_avg", "hrv_weekly_avg"]),
+            "sleep": _first_existing("daily_metrics", ["sleep_score"]),
+            "stress": _first_existing("daily_metrics", ["stress_level", "avg_stress_level"]),
+            "battery": _first_existing("daily_metrics", ["bb_peak", "bb_charged", "bb_low"]),
+            "load": _first_existing("daily_metrics", ["daily_load_acute", "tr_acute_load", "bb_drained"]),
+        }
+        select_cols = [c for c in field_map.values() if c]
+        rows = _fetch_all(
+            f"""
+            SELECT {", ".join(dict.fromkeys(select_cols))}
+            FROM daily_metrics
+            WHERE {date_col} >= CURRENT_DATE - (%s * INTERVAL '1 day')
+            ORDER BY {date_col} ASC
+            """,
+            (days,),
+        )
+        items = _build_history_rows(rows, field_map)
+        return {"data": items, "history": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/workouts/progress")
+def workouts_progress(days: int = Query(default=30, ge=1, le=3650)) -> Dict[str, Any]:
+    try:
+        date_col = _first_existing("activities", ["date", "start_time_local", "start_time_gmt"])
+        if not date_col:
+            return {
+                "data": [],
+                "summary": {
+                    "activity_types": [],
+                    "strength_proxy_trend": {"note": "No activities date column found."},
+                },
+            }
+
+        date_expr = "date" if date_col == "date" else f"({date_col})::timestamp::date"
+        selected = {
+            "date_raw": date_col,
+            "activity_name": _first_existing("activities", ["activity_name"]),
+            "activity_type": _first_existing("activities", ["activity_type", "sport_type"]),
+            "duration_sec": _first_existing("activities", ["duration_sec", "elapsed_duration_sec", "moving_duration_sec"]),
+            "distance_m": _first_existing("activities", ["distance_m"]),
+            "average_hr": _first_existing("activities", ["average_hr", "avg_hr"]),
+            "average_speed": _first_existing("activities", ["average_speed", "avg_speed"]),
+            "avg_cadence": _first_existing("activities", ["avg_cadence"]),
+            "training_load": _first_existing("activities", ["training_load"]),
+        }
+
+        select_parts = [f"{date_expr} AS workout_date"]
+        for alias, col in selected.items():
+            if col:
+                select_parts.append(f"{col} AS {alias}")
+
+        rows = _fetch_all(
+            f"""
+            SELECT {", ".join(select_parts)}
+            FROM activities
+            WHERE {date_expr} >= CURRENT_DATE - (%s * INTERVAL '1 day')
+            ORDER BY workout_date ASC
+            """,
+            (days,),
+        )
+
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            duration_sec = _num(row.get("duration_sec"))
+            distance_m = _num(row.get("distance_m"))
+            duration_min = round(duration_sec / 60.0, 2) if duration_sec is not None else None
+            distance_km = round(distance_m / 1000.0, 3) if distance_m is not None else None
+            speed_kph = _speed_to_kph(row.get("average_speed"))
+            avg_hr = _num(row.get("average_hr"))
+            avg_cadence = _num(row.get("avg_cadence"))
+            training_load = _num(row.get("training_load"))
+            when = _parse_activity_date(row.get("workout_date"))
+            activity_name = row.get("activity_name")
+            activity_type = row.get("activity_type")
+
+            item = {
+                "date": when,
+                "timestamp": when,
+                "activity_name": activity_name,
+                "activityName": activity_name,
+                "activity_type": activity_type,
+                "activityType": activity_type,
+                "sport_type": activity_type,
+                "sportType": activity_type,
+                "duration_min": duration_min,
+                "durationMin": duration_min,
+                "duration_sec": duration_sec,
+                "durationSec": duration_sec,
+                "distance_km": distance_km,
+                "distanceKm": distance_km,
+                "distance_m": distance_m,
+                "distanceM": distance_m,
+                "average_hr": avg_hr,
+                "avg_hr": avg_hr,
+                "avgHr": avg_hr,
+                "speed_kph": speed_kph,
+                "speedKph": speed_kph,
+                "avg_cadence": avg_cadence,
+                "avgCadence": avg_cadence,
+                "cadence": avg_cadence,
+                "training_load": training_load,
+                "trainingLoad": training_load,
+            }
+            items.append(item)
+
+        summary = _workout_summary(items)
+        return {"data": items, "summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/insights/latest")
+def insights_latest() -> Dict[str, Any]:
+    try:
+        insights: List[Dict[str, Any]] = []
+        weekly_cols = set(_table_columns("weekly_summaries"))
+        if weekly_cols and "week_start_date" in weekly_cols:
+            key_text_col = "key_insights" if "key_insights" in weekly_cols else None
+            rec_col = "recommendations" if "recommendations" in weekly_cols else None
+            select_parts = ["week_start_date"]
+            if key_text_col:
+                select_parts.append(key_text_col)
+            if rec_col:
+                select_parts.append(rec_col)
+            rows = _fetch_all(
+                f"""
+                SELECT {", ".join(select_parts)}
+                FROM weekly_summaries
+                ORDER BY week_start_date DESC
+                LIMIT 5
+                """
+            )
+            for r in rows:
+                summary_text = _text(r.get(key_text_col)) if key_text_col else ""
+                rec_text = _text(r.get(rec_col)) if rec_col else ""
+                text = summary_text or rec_text
+                if text:
+                    insights.append(
+                        {
+                            "summary": text,
+                            "insight": text,
+                            "message": text,
+                            "text": text,
+                            "agent": "synthesizer",
+                            "agent_name": "synthesizer",
+                            "source": "weekly_summaries",
+                            "timestamp": r.get("week_start_date"),
+                            "created_at": r.get("week_start_date"),
+                            "detail": rec_text or summary_text,
+                            "content": rec_text or summary_text,
+                        }
+                    )
+
+        rec_cols = set(_table_columns("agent_recommendations"))
+        if rec_cols and "recommendation" in rec_cols:
+            rows = _fetch_all(
+                """
+                SELECT
+                    recommendation,
+                    COALESCE(agent_name, 'synthesizer') AS agent_name,
+                    week_date,
+                    expected_direction,
+                    target_metric
+                FROM agent_recommendations
+                ORDER BY week_date DESC, id DESC
+                LIMIT 8
+                """
+            )
+            for r in rows:
+                txt = _text(r.get("recommendation"))
+                if not txt:
+                    continue
+                details = f"target={r.get('target_metric')} expected={r.get('expected_direction')}"
+                insights.append(
+                    {
+                        "summary": txt,
+                        "insight": txt,
+                        "message": txt,
+                        "text": txt,
+                        "agent": r.get("agent_name"),
+                        "agent_name": r.get("agent_name"),
+                        "source": "agent_recommendations",
+                        "timestamp": r.get("week_date"),
+                        "created_at": r.get("week_date"),
+                        "detail": details,
+                        "content": details,
+                    }
+                )
+
+        return {"insights": insights, "data": insights}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/chat")
+def chat(body: ChatRequest) -> Dict[str, Any]:
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
 
     try:
+        # Optional AI path. If unavailable, fallback returns a deterministic response.
+        from crewai import Agent, Crew, Process, Task
+        from enhanced_agents import (
+            _get_llm,
+            analyze_pattern,
+            calculate_correlation,
+            find_best_days,
+            run_sql_query,
+        )
+
         agent = Agent(
             role="Health Data Analyst",
-            goal="Answer the user with concise, data-backed health insights.",
+            goal="Answer with concise, data-backed insights from Garmin data.",
             backstory=(
-                "You analyze the Garmin health PostgreSQL database. "
-                "Use SQL tools and provide concrete, short answers."
+                "You analyze daily_metrics and activities in PostgreSQL. "
+                "Use SQL evidence and keep the answer concise."
             ),
             verbose=False,
             allow_delegation=False,
@@ -150,9 +615,9 @@ def _ai_chat_reply(message: str) -> str | None:
             llm=_get_llm(),
         )
         task = Task(
-            description=f"User question: {message}",
+            description=f"Answer this user question with concrete numbers when possible: {message}",
             agent=agent,
-            expected_output="A concise, actionable, data-backed answer.",
+            expected_output="Concise answer with concrete evidence.",
         )
         result = Crew(
             agents=[agent],
@@ -160,186 +625,14 @@ def _ai_chat_reply(message: str) -> str | None:
             process=Process.sequential,
             verbose=False,
         ).kickoff()
-        raw = getattr(result, "raw", str(result)).strip()
-        return raw or None
+        answer = getattr(result, "raw", str(result))
     except Exception:
-        return None
-
-
-@app.get("/health-check")
-def health_check():
-    db_state = "not_configured"
-    try:
-        with closing(get_db_connection()) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
-        db_state = "connected"
-    except Exception:
-        if _db_url():
-            db_state = "unavailable"
+        answer = _fallback_chat(message)
 
     return {
-        "status": "Online",
-        "database": db_state,
-        "timestamp": datetime.utcnow().isoformat(),
+        "answer": answer,
+        "response": answer,
+        "message": answer,
+        "text": answer,
+        "output": answer,
     }
-
-
-@app.get("/api/v1/snapshot/latest")
-def get_latest_snapshot():
-    try:
-        with closing(get_db_connection()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT date AS timestamp,
-                           resting_hr,
-                           hrv_last_night AS hrv,
-                           sleep_score,
-                           bb_peak AS battery,
-                           stress_level AS stress,
-                           daily_load_acute AS load
-                    FROM daily_metrics
-                    ORDER BY date DESC
-                    LIMIT 1
-                    """
-                )
-                row = cur.fetchone()
-
-        if row:
-            return {"snapshot": _to_serializable_snapshot(dict(row))}
-        return {"snapshot": {}}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.get("/api/v1/metrics/history")
-def get_metrics_history(days: int = 90):
-    safe_days = max(7, min(int(days), 365))
-    try:
-        with closing(get_db_connection()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT date,
-                           resting_hr,
-                           hrv_last_night AS hrv,
-                           sleep_score,
-                           stress_level AS stress,
-                           bb_peak AS battery,
-                           daily_load_acute AS training_load
-                    FROM daily_metrics
-                    WHERE date >= CURRENT_DATE - (%s * INTERVAL '1 day')
-                      AND date >= %s::date
-                      AND (
-                          resting_hr IS NOT NULL
-                          OR hrv_last_night IS NOT NULL
-                          OR sleep_score IS NOT NULL
-                          OR stress_level IS NOT NULL
-                          OR bb_peak IS NOT NULL
-                          OR daily_load_acute IS NOT NULL
-                      )
-                    ORDER BY date ASC
-                    """,
-                    (safe_days, DATA_START_DATE),
-                )
-                rows = cur.fetchall()
-
-        data = []
-        for row in rows:
-            item = dict(row)
-            if item.get("date") is not None:
-                item["date"] = str(item["date"])
-            data.append(item)
-
-        return {"days": safe_days, "data": data}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.get("/api/v1/insights/latest")
-def get_latest_insights():
-    try:
-        with closing(get_db_connection()) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                row = None
-                # weekly_summaries in this project stores key_insights + recommendations.
-                try:
-                    cur.execute(
-                        """
-                        SELECT week_start_date AS timestamp, key_insights, recommendations
-                        FROM weekly_summaries
-                        ORDER BY week_start_date DESC
-                        LIMIT 1
-                        """
-                    )
-                    row = cur.fetchone()
-                except Exception:
-                    # Backward-compatible fallback if older column name exists.
-                    conn.rollback()
-                    cur.execute(
-                        """
-                        SELECT week_start_date AS timestamp, summary_text AS key_insights, recommendations
-                        FROM weekly_summaries
-                        ORDER BY week_start_date DESC
-                        LIMIT 1
-                        """
-                    )
-                    row = cur.fetchone()
-
-        insights = []
-        if row:
-            ts = str(row.get("timestamp")) if row.get("timestamp") is not None else ""
-            key_insights = _safe_text(row.get("key_insights"))
-            recommendations = _safe_text(row.get("recommendations"))
-
-            if key_insights:
-                insights.append(
-                    {
-                        "agent": "Medical Synthesizer",
-                        "text": key_insights,
-                        "timestamp": ts,
-                    }
-                )
-            if recommendations:
-                insights.append(
-                    {
-                        "agent": "Action Agent",
-                        "text": recommendations,
-                        "timestamp": ts,
-                    }
-                )
-
-        return {"insights": insights}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-class ChatQuery(BaseModel):
-    message: str
-
-
-@app.post("/api/v1/chat")
-def chat_endpoint(query: ChatQuery):
-    message = query.message.strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-
-    try:
-        ai_reply = _ai_chat_reply(message)
-        if ai_reply:
-            lower = ai_reply.lower()
-            failure_markers = [
-                "cannot connect",
-                "unable to connect",
-                "database connection error",
-                "sql error",
-                "connection error",
-            ]
-            if not any(marker in lower for marker in failure_markers):
-                return {"answer": ai_reply}
-
-        return {"answer": _deterministic_chat_reply(message)}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))

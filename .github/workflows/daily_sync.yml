@@ -20,6 +20,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run tests
+        run: pytest -q
+
       - name: Restore garth session
         run: |
           mkdir -p ~/.garth
@@ -30,7 +33,7 @@ jobs:
             echo '${{ secrets.GARTH_SESSION_OAUTH2 }}' | base64 -d > ~/.garth/oauth2_token.json || true
           fi
 
-      - name: Run weekly sync
+      - name: Run daily sync pipeline
         env:
           POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}

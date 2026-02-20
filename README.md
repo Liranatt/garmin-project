@@ -67,11 +67,20 @@ The project operates as a fully automated daily pipeline (runs every morning via
 | **Export Reminder** | Weekly (Sun 08:00 AM) | Heroku Scheduler | Reminds you to click "Garmin Export". |
 | **Bulk Import** | Daily (02:00 AM) | Heroku Scheduler | Checks for & processes the export file you requested. |
 
-### Weekly Reminder Setup
-To get a weekly email reminding you to click "Export":
+### Heroku Scheduler Setup
+To keep bulk export fully automated on Heroku (not your local machine), configure both jobs:
 1. Add a job to Heroku Scheduler.
 2. Command: `python src/send_export_reminder.py`
 3. Frequency: Weekly (e.g., Sunday 08:00 AM).
+
+4. Add another job to Heroku Scheduler.
+5. Command: `python src/bulk_import.py --auto --overlap-days 7`
+6. Frequency: Daily (recommended once per day, e.g. 02:00 AM).
+
+Required Heroku config vars for bulk import job:
+- `POSTGRES_CONNECTION_STRING`
+- `EMAIL_APP_PASSWORD`
+- `EMAIL_RECIPIENT` (your Gmail inbox receiving Garmin emails)
 
 ## 💾 Database Structure
 
@@ -111,13 +120,13 @@ After each automated sync, the system sends an HTML-formatted email with:
 **Setup:**
 1. Generate a [Gmail App Password](https://myaccount.google.com/apppasswords)
 2. Add to GitHub Secrets: `EMAIL_APP_PASSWORD` and `EMAIL_RECIPIENT`
-3. The pipeline sends the email automatically after each weekly sync
+3. The pipeline sends the email automatically after each scheduled sync
 
 The email degrades gracefully — if credentials aren't set, the pipeline runs normally without sending email.
 
 ## 🚀 Key Features
 
-* **Fully Automated:** Runs weekly via GitHub Actions — zero manual intervention
+* **Fully Automated:** Runs daily via GitHub Actions — zero manual intervention
 * **Weekly Email Intelligence:** Actionable recommendations delivered to your inbox every Sunday
 * **Interactive Dashboard:** Explore trends, deep-dive into specific days, and visualize correlations
 * **Natural Language Chat:** Ask questions like *"How did my marathon training affect my sleep this month?"* and get answers grounded in your actual database
@@ -154,7 +163,7 @@ garmin_project/
 │   ├── visualizations.py       # Chart helpers
 │   └── garmin_merge.py         # FIT file bulk import
 ├── .github/workflows/
-│   └── weekly_sync.yml         # GitHub Actions cron job
+│   └── daily_sync.yml          # GitHub Actions daily cron job
 ├── why_the_math_mathing_and_why_agents_arent_hallucinating.md
 ├── requirements.txt
 └── .env                        # Credentials (not committed)

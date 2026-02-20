@@ -1,11 +1,28 @@
 """Database connection helper."""
 
+import os
+
 import psycopg2
 from config import PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASS
 
 
 def get_connection():
-    """Return a new psycopg2 connection."""
+    """Return a new psycopg2 connection.
+
+    Priority:
+    1. GARMIN_CONNECTION_STRING
+    2. POSTGRES_CONNECTION_STRING
+    3. DATABASE_URL
+    4. Discrete host/user/password fields from config.py
+    """
+    conn_str = (
+        os.getenv("GARMIN_CONNECTION_STRING")
+        or os.getenv("POSTGRES_CONNECTION_STRING")
+        or os.getenv("DATABASE_URL")
+    )
+    if conn_str:
+        return psycopg2.connect(conn_str)
+
     return psycopg2.connect(
         host=PG_HOST,
         port=PG_PORT,

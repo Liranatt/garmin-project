@@ -234,7 +234,12 @@ def _extract_summary_html(insights: str) -> str:
 #  Main send function
 # ═══════════════════════════════════════════════════════════════
 
-def send_generic_email(subject: str, html_body: str, plain_text: str = None) -> bool:
+def send_generic_email(
+    subject: str,
+    html_body: str,
+    plain_text: str = None,
+    recipient: str = None,
+) -> bool:
     """Send a generic HTML email using the configured SMTP settings."""
     if not SENDER_PASSWORD:
         log.warning("EMAIL_APP_PASSWORD not set in .env — skipping email.")
@@ -244,10 +249,15 @@ def send_generic_email(subject: str, html_body: str, plain_text: str = None) -> 
         log.warning("No sender email configured — skipping email.")
         return False
 
+    effective_recipient = recipient or os.getenv("EMAIL_RECIPIENT", RECIPIENT_EMAIL)
+    if not effective_recipient:
+        log.warning("No recipient email configured — skipping email.")
+        return False
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = SENDER_EMAIL
-    msg["To"] = RECIPIENT_EMAIL
+    msg["To"] = effective_recipient
 
     if not plain_text:
          # Naive strip tags if no plain text provided
@@ -262,9 +272,9 @@ def send_generic_email(subject: str, html_body: str, plain_text: str = None) -> 
             server.starttls()
             server.ehlo()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, [RECIPIENT_EMAIL], msg.as_string())
+            server.sendmail(SENDER_EMAIL, [effective_recipient], msg.as_string())
 
-        log.info("📧 Email sent to %s: '%s'", RECIPIENT_EMAIL, subject)
+        log.info("📧 Email sent to %s: '%s'", effective_recipient, subject)
         return True
 
     except smtplib.SMTPAuthenticationError:

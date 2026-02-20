@@ -6,6 +6,7 @@ This should be scheduled (e.g., weekly) to ensure the bulk import pipeline has f
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ logging.basicConfig(
 log = logging.getLogger("export_reminder")
 
 SUBJECT = "📥 Action Required: Request Garmin Data Export"
+DEFAULT_REMINDER_RECIPIENT = "lirattar@gmail.com"
 
 HTML_BODY = """
 <!DOCTYPE html>
@@ -60,7 +62,8 @@ HTML_BODY = """
 
 def main():
     log.info("Sending export reminder...")
-    if send_generic_email(SUBJECT, HTML_BODY):
+    recipient = os.getenv("EXPORT_REMINDER_RECIPIENT", DEFAULT_REMINDER_RECIPIENT)
+    if send_generic_email(SUBJECT, HTML_BODY, recipient=recipient):
         log.info("Reminder sent successfully.")
     else:
         log.error("Failed to send reminder.")
