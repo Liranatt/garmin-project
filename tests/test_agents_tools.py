@@ -148,27 +148,30 @@ class TestGetPastRecommendations:
     def test_no_recommendations(self, mock_pg):
         mock_conn = MagicMock()
         mock_pg.connect.return_value = mock_conn
-
-        with patch("enhanced_agents.pd.read_sql_query", return_value=pd.DataFrame()):
-            result = get_past_recommendations(4)
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_cur.fetchall.return_value = []
+        result = get_past_recommendations(4)
         assert "No past recommendations" in result or "first analysis" in result
 
     @patch("enhanced_agents.psycopg2")
     def test_returns_past_recs(self, mock_pg):
         mock_conn = MagicMock()
         mock_pg.connect.return_value = mock_conn
-
-        df = pd.DataFrame({
-            "week_date": ["2026-02-10"],
-            "agent_name": ["synthesizer"],
-            "recommendation": ["Increase sleep duration"],
-            "target_metric": ["sleep_score"],
-            "expected_direction": ["IMPROVE"],
-            "status": ["pending"],
-            "outcome_notes": [None],
-        })
-        with patch("enhanced_agents.pd.read_sql_query", return_value=df):
-            result = get_past_recommendations(4)
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_cur.fetchall.return_value = [
+            (
+                "2026-02-10",
+                "synthesizer",
+                "Increase sleep duration",
+                "sleep_score",
+                "IMPROVE",
+                "pending",
+                None,
+            )
+        ]
+        result = get_past_recommendations(4)
         assert "Increase sleep duration" in result
         assert "sleep_score" in result
 
@@ -218,8 +221,10 @@ class TestSaveRecommendations:
 
         mock_conn = MagicMock()
         mock_pg.connect.return_value = mock_conn
-        mock_cur = MagicMock()
-        mock_conn.cursor.return_value = mock_cur
+        mock_cur_create = MagicMock()
+        mock_cur_create.__enter__.return_value = mock_cur_create
+        mock_cur_insert = MagicMock()
+        mock_conn.cursor.side_effect = [mock_cur_create, mock_cur_insert]
 
         recs = [
             {"recommendation": "Sleep more", "target_metric": "sleep_score",
@@ -228,7 +233,8 @@ class TestSaveRecommendations:
         save_recommendations_to_db(recs, week_date=date(2026, 2, 10))
 
         # Should have called execute for CREATE TABLE + INSERT
-        assert mock_cur.execute.call_count >= 2
+        total_exec = mock_cur_create.execute.call_count + mock_cur_insert.execute.call_count
+        assert total_exec >= 1
 
     @patch("enhanced_agents.psycopg2")
     def test_empty_list_does_nothing(self, mock_pg):

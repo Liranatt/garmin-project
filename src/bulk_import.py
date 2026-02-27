@@ -88,9 +88,21 @@ def setup_env():
     if not os.getenv("EMAIL_APP_PASSWORD"):
         raise RuntimeError("EMAIL_APP_PASSWORD is required for Gmail IMAP access")
 
-    # Inbox where Garmin export-complete mails arrive.
+    # IMAP login identity (separate from notification recipient).
+    imap_user = (
+        os.getenv("EMAIL_IMAP_USER")
+        or os.getenv("EMAIL_RECIPIENT")
+        or os.getenv("GARMIN_EMAIL")
+    )
+    if not imap_user:
+        raise RuntimeError(
+            "EMAIL_IMAP_USER (or fallback EMAIL_RECIPIENT/GARMIN_EMAIL) is required for Gmail IMAP access"
+        )
+    os.environ["EMAIL_IMAP_USER"] = imap_user
+
+    # Recipient for notifications, independent from IMAP login account.
     if not os.getenv("EMAIL_RECIPIENT"):
-        os.environ["EMAIL_RECIPIENT"] = os.getenv("GARMIN_EMAIL", "lirattar@gmail.com")
+        os.environ["EMAIL_RECIPIENT"] = os.getenv("GARMIN_EMAIL", imap_user)
 
 def request_export_from_garmin():
     """Manual trigger reminder (Garmin export request is user-initiated)."""
@@ -275,16 +287,22 @@ def _is_presigned_expired(url: str) -> bool:
 
 def find_latest_export_email(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> ExportEmailCandidate | None:
     """Return newest Garmin export-ready email candidate, if any."""
-    user = os.getenv("EMAIL_RECIPIENT")
+    user = os.getenv("EMAIL_IMAP_USER") or os.getenv("EMAIL_RECIPIENT")
     password = os.getenv("EMAIL_APP_PASSWORD")
     if not user or not password:
-        raise RuntimeError("EMAIL_RECIPIENT and EMAIL_APP_PASSWORD are required")
+        raise RuntimeError("EMAIL_IMAP_USER (or EMAIL_RECIPIENT) and EMAIL_APP_PASSWORD are required")
 
     since_str = (date.today() - timedelta(days=lookback_days)).strftime("%d-%b-%Y")
     mail = imaplib.IMAP4_SSL(IMAP_URL)
     candidates: list[ExportEmailCandidate] = []
     try:
-        mail.login(user, password)
+        try:
+            mail.login(user, password)
+        except imaplib.IMAP4.error as e:
+            raise RuntimeError(
+                "IMAP login failed. Verify EMAIL_IMAP_USER matches the Gmail account "
+                "that owns EMAIL_APP_PASSWORD, and ensure the app password is active."
+            ) from e
         mail.select("INBOX")
         status, msg_ids = mail.search(None, f'(SINCE "{since_str}")')
         if status != "OK" or not msg_ids or not msg_ids[0]:

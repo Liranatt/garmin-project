@@ -7,6 +7,7 @@ anomaly detection, date-gap handling, and bin discretization.
 import sys
 import os
 import math
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -360,3 +361,83 @@ class TestMarkovDateGaps:
             # Gapped should have 0 transitions (gap=2 between every pair)
             assert res_gap[0]["n_transitions"] == 0 or \
                    res_gap[0]["n_transitions"] < res_cont[0]["n_transitions"]
+
+
+class TestCorrelationStatusContract:
+    """Status propagation and degraded-mode behavior for benchmark runs."""
+
+    def _make_engine(self):
+        return CorrelationEngine.__new__(CorrelationEngine)
+
+    @staticmethod
+    def _stub_core_layers(engine, monkeypatch, markov_impl):
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-02-01", periods=8, freq="D"),
+                "metric_a": np.linspace(10.0, 17.0, 8),
+                "metric_b": np.linspace(20.0, 27.0, 8),
+            }
+        )
+        monkeypatch.setattr(engine, "_layer0_load_and_clean", lambda date_start=None, date_end=None: (df.copy(), ["metric_a", "metric_b"]))
+        monkeypatch.setattr(engine, "_layer1_pearson", lambda data, metrics: ([], []))
+        monkeypatch.setattr(
+            engine,
+            "_layer2a_normality",
+            lambda data, metrics: {m: ("normal", 0.9) for m in metrics},
+        )
+        monkeypatch.setattr(engine, "_layer2b_ar1", lambda data, metrics: [])
+        monkeypatch.setattr(engine, "_layer2c_anomalies", lambda df_in, data, metrics: [])
+        monkeypatch.setattr(engine, "_layer2d_conditioned_ar1", lambda data, metrics, normality: [])
+        monkeypatch.setattr(engine, "_layer2f_rolling_correlation", lambda data, sig_pairs: [])
+        monkeypatch.setattr(engine, "_multi_lag_carryover", lambda data, metrics: [])
+        monkeypatch.setattr(engine, "_layer3_summary", lambda *args, **kwargs: "ok-summary")
+        monkeypatch.setattr(engine, "_layer2e_markov", markov_impl)
+
+    def test_compute_raw_passes_date_to_markov(self, monkeypatch):
+        engine = self._make_engine()
+        capture = {"has_date": False}
+
+        def fake_markov(data, metrics, normality):
+            capture["has_date"] = "date" in data.columns
+            return []
+
+        self._stub_core_layers(engine, monkeypatch, fake_markov)
+        out = engine._compute_raw_with_status()
+        assert capture["has_date"] is True
+        assert out["analysis_status"] == "success"
+
+    def test_markov_failure_downgrades_to_degraded(self, monkeypatch):
+        engine = self._make_engine()
+
+        def failing_markov(_data, _metrics, _normality):
+            raise ValueError("markov failed")
+
+        self._stub_core_layers(engine, monkeypatch, failing_markov)
+        out = engine._compute_raw_with_status()
+        assert out["analysis_status"] == "degraded"
+        assert "markov_layer_failed" in out["degraded_reasons"]
+
+    def test_compute_benchmarks_exposes_overall_status(self, monkeypatch):
+        engine = self._make_engine()
+        monkeypatch.setattr(engine, "bootstrap_schema", lambda: None)
+        monkeypatch.setattr(
+            engine,
+            "_get_data_range",
+            lambda: (date(2026, 2, 1), date(2026, 2, 21), 21),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_compute_raw_with_status",
+            lambda training_days=None, date_start=None, date_end=None: {
+                "summary": "ok-summary",
+                "analysis_status": "degraded",
+                "degraded_reasons": ["markov_layer_failed"],
+            },
+        )
+        monkeypatch.setattr(engine, "_build_benchmark_comparison", lambda benchmarks, computed: "comparison")
+        monkeypatch.setattr(engine, "_store_summary", lambda summary: None)
+
+        out = engine.compute_benchmarks(ref_date=date(2026, 2, 21))
+        assert out["analysis_status"] == "degraded"
+        assert out["status_by_period"]
+        assert "markov_layer_failed" in out["degraded_reasons"]

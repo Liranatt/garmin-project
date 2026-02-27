@@ -16,6 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import api as api_mod
+import routes.helpers as helpers_mod
 
 
 def test_structured_insight_has_required_sections_and_limits():
@@ -194,14 +195,14 @@ def test_cross_effects_returns_pearson_and_markov(monkeypatch):
 
 
 def test_insights_latest_returns_structured_fields(monkeypatch):
-    def fake_table_columns(table_name):
-        if table_name == "weekly_summaries":
-            return ["week_start_date", "created_at", "key_insights", "recommendations"]
-        if table_name == "agent_recommendations":
-            return ["id", "week_date", "recommendation", "agent_name"]
-        return []
-
     def fake_fetch_all(query, params=None):
+        if "information_schema.columns" in query:
+            return [
+                {"column_name": "week_start_date"},
+                {"column_name": "created_at"},
+                {"column_name": "key_insights"},
+                {"column_name": "recommendations"},
+            ]
         if "FROM weekly_summaries" in query:
             return [
                 {
@@ -219,7 +220,6 @@ def test_insights_latest_returns_structured_fields(monkeypatch):
             return []
         return []
 
-    monkeypatch.setattr(api_mod, "_table_columns", fake_table_columns)
     monkeypatch.setattr(api_mod, "_fetch_all", fake_fetch_all)
 
     out = api_mod.insights_latest()
@@ -231,3 +231,4 @@ def test_insights_latest_returns_structured_fields(monkeypatch):
     assert first["next_24_48h"]
     assert len(first["bullets"]) == 3
     assert all(len(item) <= 280 for item in first["bullets"])
+

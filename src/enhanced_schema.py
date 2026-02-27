@@ -224,6 +224,44 @@ CREATE TABLE IF NOT EXISTS agent_recommendations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_rec_week ON agent_recommendations(week_date DESC);
+
+-- Correlation engine summary storage (canonical definition)
+CREATE TABLE IF NOT EXISTS matrix_summaries (
+    id           SERIAL PRIMARY KEY,
+    computed_at  DATE NOT NULL UNIQUE,
+    summary_text TEXT NOT NULL,
+    token_est    INTEGER NOT NULL
+);
+
+-- Raw correlation results for verification and trend analysis
+-- Stores layer outputs from the correlation engine so they can be
+-- queried, compared across runs, and used for reinforcement learning.
+CREATE TABLE IF NOT EXISTS correlation_results (
+    id              SERIAL PRIMARY KEY,
+    computed_at     DATE NOT NULL,
+    window_label    TEXT NOT NULL,           -- e.g. 'Last 7 Days', 'Last 30 Days'
+    date_start      DATE NOT NULL,
+    date_end        DATE NOT NULL,
+    n_days          INTEGER NOT NULL,
+    n_metrics       INTEGER NOT NULL,
+    analysis_status TEXT DEFAULT 'success',  -- success / degraded / failed
+
+    -- Layer outputs (JSONB for flexible schema)
+    pearson_pairs   JSONB,      -- significant pairs [{m1, m2, r, p, n}, ...]
+    lag1_pairs      JSONB,      -- next-day predictors
+    ar1_results     JSONB,      -- autoregressive persistence per metric
+    normality       JSONB,      -- Shapiro-Wilk results
+    anomalies       JSONB,      -- recent z-score anomalies
+    cond_ar1        JSONB,      -- conditioned AR(1) R² improvements
+    markov          JSONB,      -- transition matrices + KL divergences
+    metric_ranges   JSONB,      -- min/max/mean/std per metric
+
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(computed_at, window_label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_corr_results_date ON correlation_results(computed_at DESC);
 """
 
 def upgrade_database(conn_str: str = None):

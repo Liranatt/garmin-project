@@ -383,15 +383,6 @@ class EnhancedGarminDataFetcher:
         except Exception as e:
             log.info(f"   ⚠️  Steps: {e}")
 
-        # Hydration
-        try:
-            hyd = self._api_call(
-                f"/usersummary-service/usersummary/hydration/daily/{start}/{end}")
-            data["hydration"] = pd.json_normalize(hyd)
-            log.info(f"   ✅ Hydration:            {len(data['hydration'])} days")
-        except Exception as e:
-            log.info(f"   ⚠️  Hydration: {e}")
-
         # Training Readiness
         try:
             tr = self._api_call(
@@ -661,17 +652,6 @@ class EnhancedGarminDataFetcher:
                 daily[d]["tr_acute_load"] = r.get("acuteLoad")
                 daily[d]["tr_level"] = r.get("level")
 
-        # Hydration
-        if "hydration" in raw:
-            for _, r in raw["hydration"].iterrows():
-                d = str(r.get("calendarDate", ""))
-                if not d:
-                    continue
-                daily.setdefault(d, {"date": d})
-                daily[d]["hydration_goal_ml"] = r.get("goalInML")
-                daily[d]["hydration_value_ml"] = r.get("valueInML")
-                daily[d]["sweat_loss_ml"] = r.get("sweatLossInML")
-
         # Weight
         if "weight" in raw:
             for _, r in raw["weight"].iterrows():
@@ -693,12 +673,6 @@ class EnhancedGarminDataFetcher:
             # Fix 1: HRV weekly avg sentinel 511 → None
             if row.get("tr_hrv_weekly_avg") == 511:
                 row["tr_hrv_weekly_avg"] = None
-
-            # Fix 2: Hydration — if value is 0 (user never logs), store NULL
-            #         so agents don't analyze fabricated data
-            hyd_val = row.get("hydration_value_ml")
-            if hyd_val is None or hyd_val == 0:
-                row["hydration_value_ml"] = None
 
         return daily
 

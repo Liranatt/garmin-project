@@ -169,23 +169,33 @@ def get_past_recommendations(weeks: int = 4) -> str:
     Shows what was recommended, the target metric, and current status.
     Use this to review what was suggested before and whether it worked.
     """
+    weeks = max(1, int(weeks))
     try:
         conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
-        query = """
-            SELECT week_date, agent_name, recommendation,
-                   target_metric, expected_direction, status, outcome_notes
-            FROM agent_recommendations
-            WHERE week_date >= CURRENT_DATE - INTERVAL '%s weeks'
-            ORDER BY week_date DESC, id
-        """
-        # Use parameterized interval safely
-        df = pd.read_sql_query(
-            "SELECT week_date, agent_name, recommendation, "
-            "target_metric, expected_direction, status, outcome_notes "
-            "FROM agent_recommendations "
-            "WHERE week_date >= CURRENT_DATE - INTERVAL '" + str(int(weeks)) + " weeks' "
-            "ORDER BY week_date DESC, id",
-            conn
+        _ensure_agent_recommendations_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT week_date, agent_name, recommendation,
+                       target_metric, expected_direction, status, outcome_notes
+                FROM agent_recommendations
+                WHERE week_date >= CURRENT_DATE - (%s * INTERVAL '1 week')
+                ORDER BY week_date DESC, id
+                """,
+                (weeks,),
+            )
+            rows = cur.fetchall()
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "week_date",
+                "agent_name",
+                "recommendation",
+                "target_metric",
+                "expected_direction",
+                "status",
+                "outcome_notes",
+            ],
         )
         conn.close()
         if df.empty:
@@ -193,6 +203,11 @@ def get_past_recommendations(weeks: int = 4) -> str:
         return df.to_string(index=False)
     except Exception as e:
         return f"No past recommendations available: {e}"
+
+
+def _ensure_agent_recommendations_table(conn) -> None:
+    # Table created by enhanced_schema.py via ensure_startup_schema()
+    pass
 
 
 def save_recommendations_to_db(recommendations: list, week_date=None):
@@ -217,22 +232,8 @@ def save_recommendations_to_db(recommendations: list, week_date=None):
     try:
         conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
         conn.autocommit = True
+        _ensure_agent_recommendations_table(conn)
         cur = conn.cursor()
-
-        # Ensure table exists
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS agent_recommendations (
-                id              SERIAL PRIMARY KEY,
-                week_date       DATE NOT NULL,
-                agent_name      TEXT NOT NULL,
-                recommendation  TEXT NOT NULL,
-                target_metric   TEXT,
-                expected_direction TEXT,
-                status          TEXT DEFAULT 'pending',
-                outcome_notes   TEXT,
-                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         for rec in recommendations:
             cur.execute(
@@ -260,26 +261,33 @@ def load_past_recommendations_context(weeks: int = 4) -> str:
     Load past recommendations as a text block for agent context injection.
     Returns a formatted string or empty string if no recommendations.
     """
+    weeks = max(1, int(weeks))
     try:
         conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
-        df = pd.read_sql_query(
-            "SELECT week_date, recommendation, target_metric, "
-            "expected_direction, status, outcome_notes "
-            "FROM agent_recommendations "
-            "WHERE week_date >= CURRENT_DATE - INTERVAL '" + str(int(weeks)) + " weeks' "
-            "ORDER BY week_date DESC, id",
-            conn
-        )
+        _ensure_agent_recommendations_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT week_date, recommendation, target_metric,
+                       expected_direction, status, outcome_notes
+                FROM agent_recommendations
+                WHERE week_date >= CURRENT_DATE - (%s * INTERVAL '1 week')
+                ORDER BY week_date DESC, id
+                """,
+                (weeks,),
+            )
+            rows = cur.fetchall()
         conn.close()
-        if df.empty:
+        if not rows:
             return ""
         lines = ["\n\nPAST RECOMMENDATIONS (last {} weeks):".format(weeks)]
-        for _, row in df.iterrows():
-            status = row.get('status', 'pending')
-            outcome = row.get('outcome_notes', '') or ''
+        for row in rows:
+            week_date, recommendation, target_metric, expected_direction, status, outcome = row
+            status = status or 'pending'
+            outcome = outcome or ''
             lines.append(
-                f"  [{row['week_date']}] {row['recommendation']} "
-                f"(target: {row['target_metric']}, expected: {row['expected_direction']}, "
+                f"  [{week_date}] {recommendation} "
+                f"(target: {target_metric}, expected: {expected_direction}, "
                 f"status: {status})"
             )
             if outcome:
@@ -347,7 +355,7 @@ class AdvancedHealthAgents:
             Flag any metric with CV>20%% as VOLATILE.""",
             verbose=True,
             allow_delegation=False,
-            tools=[],
+            tools=self.tools,
             llm=_get_llm()
         )
 
@@ -406,6 +414,9 @@ class AdvancedHealthAgents:
             - Don't call "overtraining" unless MULTIPLE metrics decline
               simultaneously over MULTIPLE consecutive days.
             - ACWR: 0.8-1.3 = optimal, <0.8 = detraining, >1.5 = injury risk.
+            - Training readiness scale (use exact buckets):
+              0-25 = poor (red), 26-50 = low (orange), 51-75 = moderate (green),
+              76-95 = high (blue), 96-100 = effective (purple).
             - bb_charged depends on sleep AND stress, not just training.
             - Overtraining needs convergent evidence: RHR up + HRV down +
               sleep worse. If only 1 of 3, NOT overtraining.
@@ -648,6 +659,9 @@ class AdvancedHealthAgents:
             "    'Get better sleep' is not a recommendation. 'Your REM variance\n"
             "    (0-108 min, CV=58%%) suggests inconsistent sleep timing'\n"
             "    is a recommendation.\n"
+            "11. TRAINING READINESS BANDS (use exact labels):\n"
+            "    0-25 poor/red, 26-50 low/orange, 51-75 moderate/green,\n"
+            "    76-95 high/blue, 96-100 effective/purple.\n"
             "ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•\n"
         )
 
@@ -673,6 +687,8 @@ class AdvancedHealthAgents:
             "    total_steps, moderate_intensity_min, vigorous_intensity_min\n\n"
             "  Training Readiness:\n"
             "    training_readiness ג€” Garmin readiness score 0-100\n"
+            "    Readiness bands: 0-25 poor/red, 26-50 low/orange,\n"
+            "    51-75 moderate/green, 76-95 high/blue, 96-100 effective/purple\n"
             "    tr_acute_load ג€” short-term training load (EPOC)\n\n"
             "  Cardio Fitness (from Garmin bulk data):\n"
             "    vo2_max_running ג€” VO2Max for running (mL/kg/min, higher=fitter)\n"
@@ -689,8 +705,7 @@ class AdvancedHealthAgents:
             "  Environment:\n"
             "    heat_acclimation_pct ג€” heat adaptation 0-100%\n"
             "    altitude_acclimation ג€” altitude adaptation score\n\n"
-            "  Weight: weight_kg\n"
-            "  Hydration: hydration_value_ml\n\n"
+            "  Weight: weight_kg\n\n"
             "  activities table columns:\n"
             "    activity_id, activity_type, distance_m, duration_sec,\n"
             "    average_hr, max_hr, calories, elevation_gain_m,\n"

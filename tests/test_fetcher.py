@@ -126,21 +126,4 @@ class TestApplyQualityFixes:
         fixed = fetcher._apply_quality_fixes(daily)
         assert fixed["2026-01-01"]["tr_hrv_weekly_avg"] == 45.0
 
-    def test_hydration_zero_nullified(self):
-        """Hydration of 0 mL is sensor noise — should become None."""
-        fetcher = self._make_fetcher()
-        daily = {"2026-01-01": {"date": "2026-01-01", "tr_hrv_weekly_avg": 45.0, "hydration_value_ml": 0}}
-        fixed = fetcher._apply_quality_fixes(daily)
-        assert fixed["2026-01-01"]["hydration_value_ml"] is None
 
-    def test_hydration_none_stays_none(self):
-        fetcher = self._make_fetcher()
-        daily = {"2026-01-01": {"date": "2026-01-01", "tr_hrv_weekly_avg": 45.0, "hydration_value_ml": None}}
-        fixed = fetcher._apply_quality_fixes(daily)
-        assert fixed["2026-01-01"]["hydration_value_ml"] is None
-
-    def test_hydration_normal_unchanged(self):
-        fetcher = self._make_fetcher()
-        daily = {"2026-01-01": {"date": "2026-01-01", "tr_hrv_weekly_avg": 45.0, "hydration_value_ml": 1500}}
-        fixed = fetcher._apply_quality_fixes(daily)
-        assert fixed["2026-01-01"]["hydration_value_ml"] == 1500

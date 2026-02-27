@@ -1,290 +1,58 @@
 """
 FastAPI backend contract for gps_presentation frontend integration.
+
+Route handlers are defined here; shared utilities live in routes/helpers.py.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import json
 from datetime import date, datetime
-from decimal import Decimal
-from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-import psycopg2
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from psycopg2.extras import RealDictCursor
 
-load_dotenv()
+from routes.helpers import (
+    _conn_str, _fetch_all, _fetch_one, _first_existing,
+    _num, _text, _pick_row_value,
+    _build_snapshot_payload, _build_history_rows,
+    _workout_summary, _structured_insight,
+    _is_low_signal_text, _insight_rank,
+    _matches_sport, _sport_bucket, _pearson, _readiness_state,
+    _parse_activity_date, _speed_to_kph,
+    _clip_text, _window_note, _fallback_chat,
+)
+
+try:
+    from pipeline.migrations import schema_audit
+except ImportError:
+    schema_audit = None
+
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    _limiter = Limiter(key_func=get_remote_address)
+    _HAS_SLOWAPI = True
+except ImportError:
+    _HAS_SLOWAPI = False
+    _limiter = None
 
 log = logging.getLogger("api")
 
 
-def _normalize_db_url(value: str) -> str:
-    db_url = (value or "").strip()
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    return db_url
-
-
-def _conn_str() -> str:
-    return _normalize_db_url(
-        os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
-    )
-
-
-if not os.getenv("POSTGRES_CONNECTION_STRING"):
-    fallback_db_url = _normalize_db_url(os.getenv("DATABASE_URL", ""))
-    if fallback_db_url:
-        # CrewAI tools in src.enhanced_agents read this env var directly.
-        os.environ["POSTGRES_CONNECTION_STRING"] = fallback_db_url
-
-
-def _to_jsonable(value: Any) -> Any:
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
-
-
-def _num(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def _text(value: Any) -> str:
-    return str(value) if value is not None else ""
-
-
-def _fetch_all(query: str, params: Optional[tuple] = None) -> List[Dict[str, Any]]:
-    cs = _conn_str()
-    if not cs:
-        raise RuntimeError("POSTGRES_CONNECTION_STRING is not set")
-    conn = psycopg2.connect(cs)
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, params or ())
-            rows = cur.fetchall()
-            out: List[Dict[str, Any]] = []
-            for row in rows:
-                out.append({k: _to_jsonable(v) for k, v in dict(row).items()})
-            return out
-    finally:
-        conn.close()
-
-
-def _fetch_one(query: str, params: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
-    rows = _fetch_all(query, params=params)
-    return rows[0] if rows else None
-
-
-@lru_cache(maxsize=64)
-def _table_columns(table_name: str) -> List[str]:
-    rows = _fetch_all(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = %s
-        ORDER BY ordinal_position
-        """,
-        (table_name,),
-    )
-    return [r["column_name"] for r in rows]
-
-
-def _first_existing(table_name: str, candidates: List[str]) -> Optional[str]:
-    cols = set(_table_columns(table_name))
-    for c in candidates:
-        if c in cols:
-            return c
-    return None
-
-
-def _pick_row_value(row: Dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key and row.get(key) is not None:
-            return row.get(key)
-    return None
-
-
-def _window_note(values: List[float], higher_is_better: bool = True) -> str:
-    clean = [v for v in values if v is not None]
-    if len(clean) < 4:
-        return "Not enough data points yet."
-    mid = len(clean) // 2
-    first = sum(clean[:mid]) / max(mid, 1)
-    second = sum(clean[mid:]) / max(len(clean) - mid, 1)
-    if first == 0:
-        return "Not enough data points yet."
-    pct = ((second - first) / abs(first)) * 100.0
-    improving = pct > 0 if higher_is_better else pct < 0
-    direction = "improved" if improving else "declined"
-    return f"{direction} {abs(pct):.1f}% between early and recent window."
-
-
-def _clip_text(text: str, max_len: int = 280) -> str:
-    s = _text(text).replace("\n", " ").strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 3].rstrip() + "..."
-
-
-def _structured_insight(text: str) -> Dict[str, Any]:
-    """Enforce short, human-readable insight schema for UI cards."""
-    cleaned = _text(text)
-    if not cleaned:
-        empty = "Insufficient data to generate this section yet."
-        return {
-            "headline": "Daily Health Insight",
-            "what_changed": empty,
-            "why_it_matters": empty,
-            "next_24_48h": "Prioritize recovery basics and reassess on the next daily sync.",
-            "bullets": [
-                f"What changed: {empty}",
-                f"Why it matters: {empty}",
-                "Next 24-48h: Prioritize recovery basics and reassess on the next daily sync.",
-            ],
-            "summary": f"- What changed: {empty}\n- Why it matters: {empty}\n- Next 24-48h: Prioritize recovery basics and reassess on the next daily sync.",
-        }
-
-    candidates: List[str] = []
-    for raw in cleaned.splitlines():
-        line = raw.strip().lstrip("-* ").strip()
-        if not line:
-            continue
-        if line.startswith("|") and line.endswith("|"):
-            continue
-        if set(line) <= {"=", "-", ":"}:
-            continue
-        candidates.append(line)
-
-    what_changed = ""
-    why_it_matters = ""
-    next_24_48h = ""
-
-    for line in candidates:
-        low = line.lower()
-        if not what_changed and any(t in low for t in ("trend", "up", "down", "increase", "decrease", "improved", "declined", "drop", "rise", "stable")):
-            what_changed = line
-            continue
-        if not why_it_matters and any(t in low for t in ("because", "means", "risk", "impact", "matters", "recovery", "fatigue", "stress", "readiness")):
-            why_it_matters = line
-            continue
-        if not next_24_48h and any(t in low for t in ("recommend", "should", "next", "today", "tomorrow", "focus", "avoid", "keep", "do")):
-            next_24_48h = line
-
-    for line in candidates:
-        if not what_changed:
-            what_changed = line
-            continue
-        if not why_it_matters and line != what_changed:
-            why_it_matters = line
-            break
-    if not next_24_48h:
-        next_24_48h = "Keep effort moderate today, protect sleep quality tonight, and reassess after tomorrow's readiness."
-
-    what_changed = _clip_text(what_changed or "Weekly pattern changed, but details are limited.", 260)
-    why_it_matters = _clip_text(why_it_matters or "This pattern can affect recovery quality and training response.", 260)
-    next_24_48h = _clip_text(next_24_48h, 260)
-    headline = _clip_text(what_changed, 84)
-
-    def bullet(label: str, value: str) -> str:
-        prefix = f"{label}: "
-        allowed = max(48, 280 - len(prefix))
-        return prefix + _clip_text(value, allowed)
-
-    bullets = [
-        bullet("What changed", what_changed),
-        bullet("Why it matters", why_it_matters),
-        bullet("Next 24-48h", next_24_48h),
-    ]
-    summary = "\n".join(f"- {b}" for b in bullets)
-    return {
-        "headline": headline,
-        "what_changed": what_changed,
-        "why_it_matters": why_it_matters,
-        "next_24_48h": next_24_48h,
-        "bullets": bullets,
-        "summary": summary,
-    }
-
-
-def _matches_sport(activity_type: str, sport: str) -> bool:
-    s = _text(sport).lower().strip()
-    if s in ("", "all"):
-        return True
-    val = _text(activity_type).lower()
-    buckets = {
-        "running": ("run", "jog"),
-        "cycling": ("cycl", "bike"),
-        "swimming": ("swim"),
-        "skiing": ("ski",),
-        "gym": ("strength", "weight", "gym", "crossfit", "workout"),
-    }
-    tokens = buckets.get(s, (s,))
-    return any(t in val for t in tokens)
-
-
-def _sport_bucket(activity_type: str) -> str:
-    val = _text(activity_type).lower()
-    if any(t in val for t in ("run", "jog")):
-        return "running"
-    if any(t in val for t in ("cycl", "bike")):
-        return "cycling"
-    if "swim" in val:
-        return "swimming"
-    if "ski" in val:
-        return "skiing"
-    if any(t in val for t in ("strength", "weight", "gym", "crossfit", "workout")):
-        return "gym"
-    if any(t in val for t in ("basketball", "bball")):
-        return "basketball"
-    return "other"
-
-
-def _pearson(xs: List[float], ys: List[float]) -> Optional[float]:
-    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
-    if len(pairs) < 5:
-        return None
-    x_vals = [p[0] for p in pairs]
-    y_vals = [p[1] for p in pairs]
-    x_mean = sum(x_vals) / len(x_vals)
-    y_mean = sum(y_vals) / len(y_vals)
-    num = 0.0
-    den_x = 0.0
-    den_y = 0.0
-    for x, y in pairs:
-        dx = x - x_mean
-        dy = y - y_mean
-        num += dx * dy
-        den_x += dx * dx
-        den_y += dy * dy
-    if den_x == 0 or den_y == 0:
-        return None
-    return num / (den_x ** 0.5 * den_y ** 0.5)
-
-
-def _readiness_state(value: Any) -> Optional[str]:
-    v = _num(value)
-    if v is None:
-        return None
-    if v >= 70:
-        return "high"
-    if v >= 50:
-        return "medium"
-    return "low"
-
+# ─── App setup ─────────────────────────────────────────────
 
 app = FastAPI(title="Garmin Health API", version="1.0.0")
+
+if _HAS_SLOWAPI and _limiter:
+    app.state.limiter = _limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _origin_env = os.getenv("FRONTEND_ORIGINS", "")
 _origins = [o.strip() for o in _origin_env.split(",") if o.strip()] or [
@@ -306,199 +74,7 @@ class ChatRequest(BaseModel):
     message: str
 
 
-def _build_snapshot_payload(row: Dict[str, Any], field_map: Dict[str, Optional[str]]) -> Dict[str, Any]:
-    date_col = field_map["date"]
-    rhr_col = field_map["rhr"]
-    hrv_col = field_map["hrv"]
-    sleep_col = field_map["sleep"]
-    bb_col = field_map["battery"]
-    stress_col = field_map["stress"]
-    load_col = field_map["load"]
-    readiness_col = field_map["readiness"]
-
-    timestamp = _pick_row_value(row, date_col or "")
-    resting_hr = _num(_pick_row_value(row, rhr_col or ""))
-    hrv = _num(_pick_row_value(row, hrv_col or ""))
-    sleep = _num(_pick_row_value(row, sleep_col or ""))
-    battery = _num(_pick_row_value(row, bb_col or ""))
-    stress = _num(_pick_row_value(row, stress_col or ""))
-    load = _num(_pick_row_value(row, load_col or ""))
-    readiness = _num(_pick_row_value(row, readiness_col or ""))
-
-    snapshot = {
-        "resting_hr": resting_hr,
-        "restingHeartRate": resting_hr,
-        "rhr": resting_hr,
-        "resting_hr_avg": resting_hr,
-        "hrv": hrv,
-        "hrv_ms": hrv,
-        "rmssd": hrv,
-        "sleep_score": sleep,
-        "sleepScore": sleep,
-        "sleep": sleep,
-        "body_battery": battery,
-        "bodyBattery": battery,
-        "battery": battery,
-        "stress": stress,
-        "stress_score": stress,
-        "avg_stress": stress,
-        "training_load": load,
-        "load": load,
-        "acute_load": load,
-        "seven_day_load": load,
-        "training_readiness": readiness,
-        "readiness": readiness,
-        "readiness_score": readiness,
-        "timestamp": timestamp,
-        "created_at": timestamp,
-        "date": timestamp,
-        "as_of": timestamp,
-    }
-    return snapshot
-
-
-def _build_history_rows(rows: List[Dict[str, Any]], field_map: Dict[str, Optional[str]]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for row in rows:
-        date_val = _pick_row_value(row, field_map["date"] or "")
-        rhr = _num(_pick_row_value(row, field_map["rhr"] or ""))
-        hrv = _num(_pick_row_value(row, field_map["hrv"] or ""))
-        sleep = _num(_pick_row_value(row, field_map["sleep"] or ""))
-        stress = _num(_pick_row_value(row, field_map["stress"] or ""))
-        battery = _num(_pick_row_value(row, field_map["battery"] or ""))
-        load = _num(_pick_row_value(row, field_map["load"] or ""))
-        readiness = _num(_pick_row_value(row, field_map["readiness"] or ""))
-
-        out.append(
-            {
-                "date": date_val,
-                "timestamp": date_val,
-                "as_of": date_val,
-                "resting_hr": rhr,
-                "restingHr": rhr,
-                "rhr": rhr,
-                "hrv": hrv,
-                "hrv_last_night": hrv,
-                "hrv_ms": hrv,
-                "rmssd": hrv,
-                "sleep_score": sleep,
-                "sleepScore": sleep,
-                "sleep": sleep,
-                "stress": stress,
-                "stress_level": stress,
-                "stress_score": stress,
-                "avg_stress": stress,
-                "battery": battery,
-                "body_battery": battery,
-                "bb_peak": battery,
-                "training_load": load,
-                "daily_load_acute": load,
-                "load": load,
-                "acute_load": load,
-                "training_readiness": readiness,
-                "readiness": readiness,
-                "readiness_score": readiness,
-            }
-        )
-    return out
-
-
-def _parse_activity_date(value: Any) -> Any:
-    if value is None:
-        return None
-    s = str(value)
-    return s[:10] if len(s) >= 10 else s
-
-
-def _speed_to_kph(value: Any) -> Optional[float]:
-    v = _num(value)
-    if v is None:
-        return None
-    # Garmin exports are usually m/s; convert if plausible.
-    if 0 < v < 25:
-        return round(v * 3.6, 3)
-    return round(v, 3)
-
-
-def _workout_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    types = sorted(
-        {
-            _text(r.get("activity_type"))
-            for r in rows
-            if r.get("activity_type") not in (None, "")
-        }
-    )
-
-    running = [r for r in rows if "run" in _text(r.get("activity_type")).lower()]
-    running_speeds = [_num(r.get("speed_kph")) for r in running]
-    running_cadence = [_num(r.get("avg_cadence")) for r in running]
-
-    strength = [
-        r
-        for r in rows
-        if any(
-            token in _text(r.get("activity_type")).lower()
-            for token in ("strength", "weight", "gym", "crossfit", "workout")
-        )
-    ]
-    strength_load = [_num(r.get("training_load")) for r in strength]
-    strength_duration = [_num(r.get("duration_min")) for r in strength]
-
-    if any(v is not None for v in strength_load):
-        strength_note = "Strength load " + _window_note(
-            [v for v in strength_load if v is not None], higher_is_better=True
-        )
-    elif any(v is not None for v in strength_duration):
-        strength_note = "Strength duration " + _window_note(
-            [v for v in strength_duration if v is not None], higher_is_better=True
-        )
-    else:
-        strength_note = "No strength-specific signal found in available columns."
-
-    running_note = "Not enough running data points yet."
-    if any(v is not None for v in running_speeds):
-        running_note = "Running speed " + _window_note(
-            [v for v in running_speeds if v is not None], higher_is_better=True
-        )
-    if any(v is not None for v in running_cadence):
-        running_note += " Running cadence " + _window_note(
-            [v for v in running_cadence if v is not None], higher_is_better=True
-        )
-
-    return {
-        "activity_types": types,
-        "strength_proxy_trend": {"note": strength_note},
-        "running_trend": {"note": running_note},
-    }
-
-
-def _fallback_chat(message: str) -> str:
-    try:
-        row = _fetch_one(
-            """
-            SELECT
-                AVG(resting_hr) AS avg_rhr,
-                AVG(hrv_last_night) AS avg_hrv,
-                AVG(sleep_score) AS avg_sleep,
-                AVG(stress_level) AS avg_stress
-            FROM daily_metrics
-            WHERE date >= CURRENT_DATE - INTERVAL '7 days'
-            """
-        ) or {}
-        return (
-            "AI chat model is unavailable right now. "
-            f"Last 7d averages: RHR={_num(row.get('avg_rhr'))}, "
-            f"HRV={_num(row.get('avg_hrv'))}, "
-            f"Sleep={_num(row.get('avg_sleep'))}, "
-            f"Stress={_num(row.get('avg_stress'))}. "
-            f"Your question was: {message}"
-        )
-    except Exception:
-        return (
-            "AI chat model is unavailable right now and database summary could not be loaded. "
-            f"Your question was: {message}"
-        )
-
+# ─── Routes ────────────────────────────────────────────────
 
 @app.get("/")
 def root() -> Dict[str, Any]:
@@ -753,107 +329,84 @@ def analytics_cross_effects(days: int = Query(default=90, ge=14, le=3650)) -> Di
             stimulus_by_day.setdefault(day, {})
             stimulus_by_day[day][bucket] = stimulus_by_day[day].get(bucket, 0.0) + float(load)
 
-        metrics_by_day: Dict[str, Dict[str, Optional[float]]] = {}
+        # Build daily_metrics lookup
+        dm_by_day: Dict[str, Dict[str, Any]] = {}
         for row in dm_rows:
             day = _parse_activity_date(row.get("d"))
-            if not day:
-                continue
-            metrics_by_day[day] = {
-                "readiness": _num(row.get("readiness")),
-                "sleep": _num(row.get("sleep")),
-                "stress": _num(row.get("stress")),
-                "hrv": _num(row.get("hrv")),
-                "rhr": _num(row.get("rhr")),
-            }
+            if day:
+                dm_by_day[day] = row
 
-        days_sorted = sorted(metrics_by_day.keys())
-        if len(days_sorted) < 6:
-            return {"pearson_effects": [], "markov_effects": [], "summary": "Not enough daily rows for cross-effects."}
+        sorted_days = sorted(dm_by_day.keys())
 
-        buckets = ["running", "cycling", "swimming", "skiing", "gym", "basketball"]
-        outcomes = [
-            ("readiness", "Training Readiness"),
-            ("sleep", "Sleep Score"),
-            ("stress", "Stress"),
-            ("hrv", "HRV"),
-            ("rhr", "Resting HR"),
-        ]
-
+        # Pearson effects: for each sport bucket, correlate stimulus with next-day outcomes
+        sport_buckets = sorted({b for stim in stimulus_by_day.values() for b in stim})
         pearson_effects: List[Dict[str, Any]] = []
-        for bucket in buckets:
-            x_vals: List[float] = []
-            outcome_series: Dict[str, List[Optional[float]]] = {k: [] for k, _ in outcomes}
-            for idx in range(len(days_sorted) - 1):
-                day = days_sorted[idx]
-                nxt = days_sorted[idx + 1]
-                x = stimulus_by_day.get(day, {}).get(bucket, 0.0)
-                x_vals.append(float(x))
-                for outcome_key, _ in outcomes:
-                    outcome_series[outcome_key].append(metrics_by_day.get(nxt, {}).get(outcome_key))
-
-            for outcome_key, outcome_label in outcomes:
-                corr = _pearson(x_vals, outcome_series[outcome_key])
-                if corr is None:
-                    continue
-                pearson_effects.append(
-                    {
+        for bucket in sport_buckets:
+            for outcome_key in ("readiness", "sleep", "stress", "hrv", "rhr"):
+                xs: List[float] = []
+                ys: List[float] = []
+                for i, day in enumerate(sorted_days[:-1]):
+                    next_day = sorted_days[i + 1]
+                    stim = (stimulus_by_day.get(day) or {}).get(bucket)
+                    if stim is None:
+                        continue
+                    outcome = _num((dm_by_day.get(next_day) or {}).get(outcome_key))
+                    if outcome is None:
+                        continue
+                    xs.append(stim)
+                    ys.append(outcome)
+                r = _pearson(xs, ys)
+                if r is not None:
+                    pearson_effects.append({
                         "sport": bucket,
                         "outcome": outcome_key,
-                        "outcome_label": outcome_label,
-                        "r": round(float(corr), 4),
-                        "window_days": days,
-                        "mode": "next_day",
-                    }
-                )
-        pearson_effects.sort(key=lambda item: abs(item["r"]), reverse=True)
+                        "r": round(r, 3),
+                        "n": len(xs),
+                        "interpretation": (
+                            "strong" if abs(r) > 0.7 else
+                            "moderate" if abs(r) > 0.4 else
+                            "weak" if abs(r) > 0.2 else "negligible"
+                        ),
+                    })
 
-        # Markov-style readiness transitions conditioned on sport stimulus.
-        markov_counts: Dict[str, Dict[str, Dict[str, int]]] = {}
-        for idx in range(len(days_sorted) - 1):
-            day = days_sorted[idx]
-            nxt = days_sorted[idx + 1]
-            from_state = _readiness_state(metrics_by_day.get(day, {}).get("readiness"))
-            to_state = _readiness_state(metrics_by_day.get(nxt, {}).get("readiness"))
-            if not from_state or not to_state:
-                continue
-            for bucket, load in stimulus_by_day.get(day, {}).items():
-                if load <= 0:
-                    continue
-                markov_counts.setdefault(bucket, {}).setdefault(from_state, {})
-                markov_counts[bucket][from_state][to_state] = markov_counts[bucket][from_state].get(to_state, 0) + 1
-
+        # Markov effects: readiness state transitions after each sport
         markov_effects: List[Dict[str, Any]] = []
-        for bucket, from_map in markov_counts.items():
-            for from_state, to_map in from_map.items():
-                total = sum(to_map.values())
-                if total <= 0:
+        readiness_key = "readiness"
+        for bucket in sport_buckets:
+            transitions: Dict[str, Dict[str, int]] = {}
+            for i, day in enumerate(sorted_days[:-1]):
+                next_day = sorted_days[i + 1]
+                stim = (stimulus_by_day.get(day) or {}).get(bucket)
+                if stim is None:
                     continue
-                for to_state, count in to_map.items():
-                    markov_effects.append(
-                        {
-                            "sport": bucket,
-                            "from_state": from_state,
-                            "to_state": to_state,
-                            "probability": round(count / total, 4),
-                            "count": count,
-                        }
-                    )
-        markov_effects.sort(key=lambda item: item["probability"], reverse=True)
+                state_today = _readiness_state((dm_by_day.get(day) or {}).get(readiness_key))
+                state_tomorrow = _readiness_state((dm_by_day.get(next_day) or {}).get(readiness_key))
+                if state_today is None or state_tomorrow is None:
+                    continue
+                transitions.setdefault(state_today, {})
+                transitions[state_today][state_tomorrow] = transitions[state_today].get(state_tomorrow, 0) + 1
 
-        top = pearson_effects[:3]
-        if top:
-            summary = " | ".join(
-                f"{e['sport']} -> {e['outcome_label']} ({'+' if e['r'] >= 0 else ''}{e['r']:.2f})"
-                for e in top
+            if transitions:
+                markov_effects.append({
+                    "sport": bucket,
+                    "transitions": transitions,
+                    "total_observations": sum(
+                        sum(to_counts.values())
+                        for to_counts in transitions.values()
+                    ),
+                })
+
+        summary_parts = []
+        for pe in sorted(pearson_effects, key=lambda x: abs(x["r"]), reverse=True)[:5]:
+            summary_parts.append(
+                f"{pe['sport']} → next-day {pe['outcome']}: r={pe['r']:.2f} ({pe['interpretation']}, n={pe['n']})"
             )
-        else:
-            summary = "No reliable cross-activity Pearson effects yet."
+        cross_summary = "; ".join(summary_parts) if summary_parts else "Not enough cross-effect data yet."
 
         return {
-            "pearson_effects": pearson_effects[:18],
-            "markov_effects": markov_effects[:18],
-            "summary": summary,
-            "window_days": days,
+            "pearson_effects": pearson_effects,
+            "markov_effects": markov_effects,
+            "summary": cross_summary,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -863,125 +416,144 @@ def analytics_cross_effects(days: int = Query(default=90, ge=14, le=3650)) -> Di
 def insights_latest() -> Dict[str, Any]:
     try:
         insights: List[Dict[str, Any]] = []
-        weekly_cols = set(_table_columns("weekly_summaries"))
-        if weekly_cols and "week_start_date" in weekly_cols:
-            key_text_col = "key_insights" if "key_insights" in weekly_cols else None
-            rec_col = "recommendations" if "recommendations" in weekly_cols else None
-            created_col = "created_at" if "created_at" in weekly_cols else None
-            select_parts = ["week_start_date"]
-            if created_col:
-                select_parts.append(created_col)
-            if key_text_col:
-                select_parts.append(key_text_col)
-            if rec_col:
-                select_parts.append(rec_col)
-            rows = _fetch_all(
-                f"""
-                SELECT {", ".join(select_parts)}
-                FROM weekly_summaries
-                ORDER BY {created_col if created_col else "week_start_date"} DESC
-                LIMIT 5
-                """
-            )
-            for r in rows:
-                summary_text = _text(r.get(key_text_col)) if key_text_col else ""
-                rec_text = _text(r.get(rec_col)) if rec_col else ""
-                text = rec_text or summary_text
-                structured = _structured_insight(text)
-                ts = r.get(created_col) if created_col else r.get("week_start_date")
-                if text:
-                    insights.append(
-                        {
-                            "summary": structured["summary"],
-                            "insight": structured["summary"],
-                            "message": structured["summary"],
-                            "text": structured["summary"],
-                            "headline": structured["headline"],
-                            "what_changed": structured["what_changed"],
-                            "why_it_matters": structured["why_it_matters"],
-                            "next_24_48h": structured["next_24_48h"],
-                            "bullets": structured["bullets"],
-                            "agent": "synthesizer",
-                            "agent_name": "synthesizer",
-                            "source": "weekly_summaries",
-                            "timestamp": ts,
-                            "created_at": ts,
-                            "detail": summary_text or rec_text,
-                            "content": summary_text or rec_text,
-                        }
-                    )
 
-        rec_cols = set(_table_columns("agent_recommendations"))
-        if rec_cols and "recommendation" in rec_cols:
+        # Source 1: weekly_summaries
+        try:
+            weekly_cols = {r["column_name"] for r in _fetch_all(
+                """SELECT column_name FROM information_schema.columns
+                   WHERE table_schema='public' AND table_name='weekly_summaries'"""
+            )}
+        except Exception:
+            weekly_cols = set()
+
+        if weekly_cols:
+            pipeline_status_col = "pipeline_status_json" if "pipeline_status_json" in weekly_cols else None
+            select_parts = ["week_start_date"]
+            for col in ("key_insights", "recommendations", "analysis_status"):
+                if col in weekly_cols:
+                    select_parts.append(col)
+            if pipeline_status_col:
+                select_parts.append(pipeline_status_col)
+
             rows = _fetch_all(
-                """
-                SELECT
-                    recommendation,
-                    COALESCE(agent_name, 'synthesizer') AS agent_name,
-                    week_date,
-                    expected_direction,
-                    target_metric
-                FROM agent_recommendations
-                ORDER BY week_date DESC, id DESC
-                LIMIT 8
-                """
+                f"""SELECT {', '.join(select_parts)} FROM weekly_summaries
+                    ORDER BY week_start_date DESC LIMIT 4"""
             )
+
             for r in rows:
-                txt = _text(r.get("recommendation"))
-                if not txt:
-                    continue
-                details = f"target={r.get('target_metric')} expected={r.get('expected_direction')}"
-                structured = _structured_insight(txt)
-                insights.append(
-                    {
-                        "summary": structured["summary"],
-                        "insight": structured["summary"],
-                        "message": structured["summary"],
-                        "text": structured["summary"],
-                        "headline": structured["headline"],
-                        "what_changed": structured["what_changed"],
-                        "why_it_matters": structured["why_it_matters"],
-                        "next_24_48h": structured["next_24_48h"],
-                        "bullets": structured["bullets"],
-                        "agent": r.get("agent_name"),
-                        "agent_name": r.get("agent_name"),
-                        "source": "agent_recommendations",
-                        "timestamp": r.get("week_date"),
-                        "created_at": r.get("week_date"),
-                        "detail": details,
-                        "content": details,
+                raw_pipeline_status = r.get("pipeline_status_json")
+                pipeline_status = raw_pipeline_status
+                if isinstance(raw_pipeline_status, str):
+                    try:
+                        pipeline_status = json.loads(raw_pipeline_status)
+                    except Exception:
+                        pipeline_status = {"raw": raw_pipeline_status}
+
+                raw_insights = _text(r.get("key_insights"))
+                raw_recs = _text(r.get("recommendations"))
+
+                if raw_insights and not _is_low_signal_text(raw_insights):
+                    structured = _structured_insight(raw_insights)
+                    item = {
+                        "source": "weekly_summaries",
+                        "type": "weekly_insight",
+                        "timestamp": r.get("week_start_date"),
+                        "summary": structured["headline"],
+                        "detail": structured["summary"],
+                        "content": raw_insights,
+                        "structured": structured,
+                        "analysis_status": r.get("analysis_status", "unknown"),
+                        "pipeline_status": pipeline_status,
                     }
-                )
+                    item.update(structured)
+                    insights.append(item)
+
+                if raw_recs and not _is_low_signal_text(raw_recs):
+                    structured_rec = _structured_insight(raw_recs)
+                    item = {
+                        "source": "weekly_summaries",
+                        "type": "recommendation",
+                        "timestamp": r.get("week_start_date"),
+                        "summary": structured_rec["headline"],
+                        "detail": structured_rec["summary"],
+                        "content": raw_recs,
+                        "structured": structured_rec,
+                        "analysis_status": r.get("analysis_status", "unknown"),
+                        "pipeline_status": pipeline_status,
+                    }
+                    item.update(structured_rec)
+                    insights.append(item)
+
+        # Source 2: agent_recommendations
+        try:
+            rec_rows = _fetch_all(
+                """SELECT week_date, agent_name, recommendation,
+                          target_metric, expected_direction, status, outcome_notes
+                   FROM agent_recommendations
+                   ORDER BY week_date DESC, id DESC LIMIT 20"""
+            )
+            for rec in rec_rows:
+                text = _text(rec.get("recommendation"))
+                if text and not _is_low_signal_text(text):
+                    structured = _structured_insight(text)
+                    item = {
+                        "source": "agent_recommendations",
+                        "type": "recommendation",
+                        "timestamp": rec.get("week_date"),
+                        "summary": _clip_text(text, 120),
+                        "detail": text,
+                        "content": text,
+                        "structured": structured,
+                        "agent_name": rec.get("agent_name"),
+                        "target_metric": rec.get("target_metric"),
+                        "expected_direction": rec.get("expected_direction"),
+                        "status": rec.get("status"),
+                        "outcome_notes": rec.get("outcome_notes"),
+                    }
+                    item.update(structured)
+                    insights.append(item)
+        except Exception:
+            pass
+
+        # Deduplicate by content hash
+        if insights:
+            dedup: Dict[str, Dict[str, Any]] = {}
+            for item in insights:
+                key = _text(item.get("content"))[:200]
+                if key not in dedup:
+                    dedup[key] = item
+            insights = list(dedup.values()) if dedup else insights
+
+            insights.sort(key=_insight_rank, reverse=True)
+            insights = insights[:12]
 
         return {"insights": insights, "data": insights}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Rate limit decorator (no-op if slowapi not installed)
+_rate_limit = _limiter.limit("5/minute") if _HAS_SLOWAPI and _limiter else lambda f: f
+
+
 @app.post("/api/v1/chat")
-def chat(body: ChatRequest) -> Dict[str, Any]:
+@_rate_limit
+def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
     try:
-        # Optional AI path. If unavailable, fallback returns a deterministic response.
         from crewai import Agent, Crew, Process, Task
         try:
             from src.enhanced_agents import (
-                _get_llm,
-                analyze_pattern,
-                calculate_correlation,
-                find_best_days,
-                run_sql_query,
+                _get_llm, analyze_pattern, calculate_correlation,
+                find_best_days, run_sql_query,
             )
         except Exception:
             from enhanced_agents import (
-                _get_llm,
-                analyze_pattern,
-                calculate_correlation,
-                find_best_days,
-                run_sql_query,
+                _get_llm, analyze_pattern, calculate_correlation,
+                find_best_days, run_sql_query,
             )
 
         agent = Agent(
@@ -1018,3 +590,13 @@ def chat(body: ChatRequest) -> Dict[str, Any]:
         "text": answer,
         "output": answer,
     }
+
+
+@app.get("/api/v1/admin/migration-audit")
+def migration_audit() -> Dict[str, Any]:
+    if schema_audit is None:
+        raise HTTPException(status_code=500, detail="migration module not available")
+    try:
+        return schema_audit(_conn_str())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

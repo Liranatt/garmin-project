@@ -41,6 +41,7 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+          PIPELINE_STATUS_PATH: pipeline_status.json
           GARTH_HOME: ~/.garth
         working-directory: src
         run: |
@@ -51,6 +52,24 @@ jobs:
             echo "✅ POSTGRES_CONNECTION_STRING is SET (length: ${#POSTGRES_CONNECTION_STRING})"
           fi
           python weekly_sync.py --days 2
+
+      - name: Show pipeline status
+        if: always()
+        working-directory: src
+        run: |
+          if [ -f pipeline_status.json ]; then
+            cat pipeline_status.json
+          else
+            echo "pipeline_status.json was not generated"
+          fi
+
+      - name: Upload pipeline status artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-status
+          path: src/pipeline_status.json
+          if-no-files-found: warn
 
       - name: Save garth session
         if: always()
