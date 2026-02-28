@@ -1332,12 +1332,21 @@ class CorrelationEngine:
             sig = "***" if p < 0.01 else ("**" if p < 0.05 else "*")
             n_str = f", n={n}" if n is not None else ""
             lines.append(f"  {arrow} {a} ֳ— {b}: r={r:+.3f} (p={p:.4f}{n_str}) {sig}")
+        # Interpretive hint for same-day correlations
+        if sig_pairs:
+            top_a, top_b, top_r = sig_pairs[0][0], sig_pairs[0][1], sig_pairs[0][2]
+            direction = "positively" if top_r > 0 else "inversely"
+            lines.append(f"  => Strongest same-day link: {top_a} and {top_b} move {direction} together")
         lines.append("")
 
         # Next-day predictors
         lines.append("[NEXT-DAY PREDICTORS (what yesterday predicts about today)]")
         for pred, tgt, r, p, n in lag1_results[:8]:
             lines.append(f"  {pred} ג†’ {tgt}: r={r:+.3f} (p={p:.4f}, n={n})")
+        # Interpretive hint for next-day predictors
+        if lag1_results:
+            top_pred, top_tgt = lag1_results[0][0], lag1_results[0][1]
+            lines.append(f"  => Yesterday's {top_pred} is the strongest predictor of today's {top_tgt}")
         lines.append("")
 
         # AR(1) persistence
@@ -1352,11 +1361,13 @@ class CorrelationEngine:
         lines.append("")
 
         # Distributions
+        # Distributions (compressed)
         normal_m = [m for m, (s, _) in normality.items() if s == "normal"]
         nonnorm_m = [m for m, (s, _) in normality.items() if s == "non_normal"]
         lines.append("[DISTRIBUTIONS]")
-        lines.append(f"  Normal: {', '.join(normal_m[:10])}")
-        lines.append(f"  Non-normal: {', '.join(nonnorm_m[:10])}")
+        lines.append(f"  {len(normal_m)} normal, {len(nonnorm_m)} non-normal"
+                     f" (incl: {', '.join(nonnorm_m[:5])})")
+        lines.append("")
         lines.append("")
 
         # Anomalies
@@ -1485,20 +1496,130 @@ class CorrelationEngine:
         lines.append("")
 
         # Current metric ranges
-        lines.append(f"[CURRENT METRIC RANGES (last {n_days} days)]")
+        # Post-workout timeline (raw data, no interpretation)
+        if training_days:
+            hard_days = sorted(
+                [(d, info) for d, info in training_days.items()
+                 if info.get("intensity") == "HARD"],
+                key=lambda x: x[1].get("hard_minutes", 0),
+                reverse=True
+            )[:3]
+            if hard_days:
+                lines.append("[POST-WORKOUT TIMELINE (raw data -- agent must check lag correlations)]")
+                timeline_cols = ["hrv_last_night", "stress_level", "bb_charged",
+                                 "sleep_score", "resting_hr_sleep"]
+                for d, info in hard_days:
+                    types = ", ".join(info.get("activity_types", []))
+                    lines.append(
+                        f"  {d}: {info['intensity']} ({info['hard_minutes']:.0f}min, {types})"
+                    )
+                    # Find day+1 and day+2 in df
+                    for lag_label, lag_offset in [("day+1", 1), ("day+2", 2)]:
+                        try:
+                            d_date = pd.Timestamp(d).date() if not hasattr(d, "date") else (d.date() if hasattr(d, "date") and callable(d.date) else d)
+                            target_date = d_date + pd.Timedelta(days=lag_offset)
+                            row = df[df["date"].apply(
+                                lambda x: x.date() if hasattr(x, "date") and callable(x.date) else x
+                            ) == target_date]
+                            if len(row) > 0:
+                                vals = []
+                                for col in timeline_cols:
+                                    if col in row.columns:
+                                        v = row[col].iloc[0]
+                                        if pd.notna(v):
+                                            vals.append(f"{col}={v:.0f}")
+                                if vals:
+                                    lines.append(f"    {lag_label} ({target_date}): {', '.join(vals)}")
+                        except Exception:
+                            pass
+                lines.append("  NOTE: Check MULTI-DAY CARRYOVER for which lag is significant")
+                lines.append("")
+
+        # Week activity summary (from activities table)
+        try:
+            import psycopg2 as _pg2
+            conn = _pg2.connect(self.conn_str)
+            max_date = df["date"].max()
+            min_date = max_date - pd.Timedelta(days=7)
+            act_df = pd.read_sql_query(
+                "SELECT sport_type, COUNT(*) as cnt, "
+                "AVG(average_hr) as avg_hr, "
+                "SUM(duration_sec) as total_sec, "
+                "AVG(aerobic_training_effect) as avg_te, "
+                "SUM(training_load) as total_epoc "
+                "FROM activities "
+                "WHERE date >= %s AND date <= %s "
+                "GROUP BY sport_type ORDER BY cnt DESC",
+                conn, params=(min_date, max_date)
+            )
+            conn.close()
+            if len(act_df) > 0:
+                lines.append("[WEEK ACTIVITY SUMMARY]")
+                for _, row in act_df.iterrows():
+                    sport = row["sport_type"] or "unknown"
+                    cnt = int(row["cnt"])
+                    hr = f"avg HR {row['avg_hr']:.0f}" if pd.notna(row["avg_hr"]) else ""
+                    mins = f"{row['total_sec']/60:.0f}min" if pd.notna(row["total_sec"]) else ""
+                    te = f"effect {row['avg_te']:.1f}" if pd.notna(row["avg_te"]) else ""
+                    parts = [p for p in [f"{cnt}x", hr, mins, te] if p]
+                    lines.append(f"  {sport}: {', '.join(parts)}")
+                total_epoc = act_df["total_epoc"].sum()
+                if pd.notna(total_epoc) and total_epoc > 0:
+                    lines.append(f"  Week total EPOC: {total_epoc:.0f}")
+                # Count rest days
+                activity_dates = set()
+                conn2 = _pg2.connect(self.conn_str)
+                act_dates = pd.read_sql_query(
+                    "SELECT DISTINCT date FROM activities "
+                    "WHERE date >= %s AND date <= %s",
+                    conn2, params=(min_date, max_date)
+                )
+                conn2.close()
+                if len(act_dates) > 0:
+                    rest_days = 7 - len(act_dates)
+                    lines.append(f"  Rest days: {rest_days}")
+                lines.append("")
+        except Exception as e:
+            log.warning("Could not build activity summary: %s", e)
+
+        lines.append(f"[METRIC RANGES + DELTAS (last {n_days} days)]")
+        # Compare last 7 days vs full period for deltas
+        last_7_mask = df["date"] >= (df["date"].max() - pd.Timedelta(days=7))
         for m in KEY_RANGE_METRICS:
-            # Check renamed versions too
             actual = m
             if m not in df.columns:
                 actual = RENAME_MAP.get(m, m)
             if actual in df.columns:
                 vals = df[actual].dropna()
                 if len(vals) > 0:
-                    lines.append(
-                        f"  {actual}: min={vals.min():.0f}, "
-                        f"max={vals.max():.0f}, "
-                        f"mean={vals.mean():.1f}, std={vals.std():.1f}"
-                    )
+                    full_mean = vals.mean()
+                    # Compute 7-day mean if enough data
+                    recent = df.loc[last_7_mask, actual].dropna() if actual in df.columns else pd.Series()
+                    if len(recent) >= 3 and full_mean != 0:
+                        recent_mean = recent.mean()
+                        delta_pct = ((recent_mean - full_mean) / abs(full_mean)) * 100
+                        trend = "IMPROVING" if abs(delta_pct) > 3 else "STABLE"
+                        # For metrics where lower is better, flip the label
+                        lower_is_better = actual in ("resting_hr", "stress_level", "resting_hr_sleep",
+                                                     "race_time_5k", "race_time_10k")
+                        if lower_is_better and delta_pct < -3:
+                            trend = "IMPROVING"
+                        elif lower_is_better and delta_pct > 3:
+                            trend = "DECLINING"
+                        elif not lower_is_better and delta_pct > 3:
+                            trend = "IMPROVING"
+                        elif not lower_is_better and delta_pct < -3:
+                            trend = "DECLINING"
+                        lines.append(
+                            f"  {actual}: {vals.min():.0f}-{vals.max():.0f} "
+                            f"(mean {full_mean:.1f}) | 7d: {recent_mean:.1f} "
+                            f"| delta: {delta_pct:+.1f}% {trend}"
+                        )
+                    else:
+                        lines.append(
+                            f"  {actual}: min={vals.min():.0f}, max={vals.max():.0f}, "
+                            f"mean={vals.mean():.1f}, std={vals.std():.1f}"
+                        )
 
         summary = "\n".join(lines)
         log.info(f"   ג“ Summary: {len(summary)} chars (~{len(summary)//4} tokens)")

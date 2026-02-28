@@ -352,7 +352,13 @@ class AdvancedHealthAgents:
 
             You do NOT give lifestyle advice. You ONLY interpret numbers.
             Flag any finding with n<20 as PRELIMINARY.
-            Flag any metric with CV>20%% as VOLATILE.""",
+            Flag any metric with CV>20%% as VOLATILE.
+
+            INVESTIGATION RULE: For every anomaly or strong correlation you
+            report, note what the surface inputs (Layer 2: stress, workload,
+            BB drain) and underlying mechanics (Layer 3: sleeping HR,
+            deep sleep, respiration, HRV) say about it. Flag any
+            contradictions between surface metrics and deeper mechanics.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
@@ -386,7 +392,12 @@ class AdvancedHealthAgents:
             EVIDENCE: [specific days and numbers]
             SAMPLE SIZE: n=[number]
             CONFIDENCE: HIGH / PRELIMINARY / SUSPECT
-            VERDICT: IMPROVING / DECLINING / STABLE / VOLATILE""",
+            VERDICT: IMPROVING / DECLINING / STABLE / VOLATILE
+
+            INVESTIGATION RULE: When identifying patterns, always check if
+            surface-level patterns (stress, workload) are confirmed or
+            contradicted by underlying mechanics (sleeping HR, deep sleep,
+            respiration). If they contradict, dig deeper and report both.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
@@ -421,7 +432,13 @@ class AdvancedHealthAgents:
             - Overtraining needs convergent evidence: RHR up + HRV down +
               sleep worse. If only 1 of 3, NOT overtraining.
             - Report next-day response after hard days with specific numbers.
-            - Recovery speed: Fast (<24h), Moderate (24-48h), Slow (>48h).""",
+            - Recovery speed: Fast (<24h), Moderate (24-48h), Slow (>48h).
+
+            INVESTIGATION RULE: Rest days must be validated — check stress,
+            HRV, sleeping HR, not just the absence of activity. A hard
+            workout day followed by excellent sleeping HR tells a different
+            recovery story than one followed by poor sleeping HR. Always
+            check the underlying mechanics before labeling recovery speed.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
@@ -449,7 +466,14 @@ class AdvancedHealthAgents:
             - Build DAY STORIES: "Feb X: [activity] -> Feb X+1: [response]"
             - Use KL-divergence for which conditions shift transitions.
             - If data doesn't exist (caffeine, alcohol), say "not available".
-            - Every finding must cite specific numbers.""",
+            - Every finding must cite specific numbers.
+
+            INVESTIGATION RULE: Always decompose sleep quality through
+            all three layers. Surface factors (stress, BB drain, hard
+            workout) may suggest bad sleep, but underlying mechanics
+            (sleeping HR, respiration rate, sleep architecture percentages)
+            tell the true story. When they contradict, report the full
+            picture and let the deeper metrics take priority.""",
             verbose=True,
             allow_delegation=False,
             tools=self.tools,
@@ -471,6 +495,13 @@ class AdvancedHealthAgents:
               improve and by HOW MUCH based on the data.
             - Call out what's ALREADY going well. Not everything needs fixing.
             - If the biggest issue is data quality, say that first.
+
+            INVESTIGATION RULE: When previous agents claim a causal
+            relationship, verify they checked all three layers:
+            Layer 1 (outcome), Layer 2 (surface inputs), Layer 3
+            (underlying mechanics). If they stopped at Layer 2 without
+            checking Layer 3, call it out. Never let a surface-level
+            explanation stand when deeper mechanics tell a different story.
 
             LONG-TERM MEMORY RULES:
             - ALWAYS check past recommendations using the 'Get Past Recommendations' tool.
@@ -621,9 +652,9 @@ class AdvancedHealthAgents:
                 f"{swly_block}"
             )
 
-        # ג”€ג”€ Shared analytical rules that go into every task ג”€ג”€
+        # == Shared analytical rules that go into every task ==
         analysis_rules = (
-            "\n\nג•ג•ג•ג•ג•ג• ANALYTICAL RULES (MUST FOLLOW) ג•ג•ג•ג•ג•ג•\n"
+            "\n\n====== ANALYTICAL RULES (MUST FOLLOW) ======\n"
             "1. SAMPLE SIZE: Any correlation or prediction with n<20 is PRELIMINARY.\n"
             "   Say so explicitly. Do NOT build recommendations on n<10 findings.\n"
             "2. OUTLIER CHECK: Before calling something a 'trend', check if removing\n"
@@ -633,9 +664,9 @@ class AdvancedHealthAgents:
             "3. DATA QUALITY: A value of 0 for rem_sleep_sec or deep_sleep_sec,\n"
             "   or a sleep_score below 40, likely indicates a tracking failure\n"
             "   (watch removed during sleep, sensor malfunction). Flag it as\n"
-            "   SUSPECT DATA ג€” do not treat it as a real physiological event.\n"
+            "   SUSPECT DATA -- do not treat it as a real physiological event.\n"
             "4. METRIC DISAMBIGUATION:\n"
-            "   - tr_acute_load (DB) ג†’ displayed as 'training_acute_load' = Garmin's\n"
+            "   - tr_acute_load (DB) = displayed as 'training_acute_load' = Garmin's\n"
             "     readiness-derived EPOC accumulation (changes even on rest days)\n"
             "   - daily_load_acute = 7-day rolling training load from Garmin bulk data\n"
             "   - training_load (activities table) = per-workout EPOC score\n"
@@ -647,13 +678,13 @@ class AdvancedHealthAgents:
             "   If HRV/RHR/stress normalized within 24h, that's a POSITIVE signal\n"
             "   (good recovery capacity), not a negative one.\n"
             "7. VARIANCE vs TREND: High day-to-day swings (e.g., sleep bouncing\n"
-            "   52ג†’89ג†’72ג†’83ג†’70) is VARIABILITY, not a decline. Report the range\n"
+            "   52->89->72->83->70) is VARIABILITY, not a decline. Report the range\n"
             "   and standard deviation, not just the average.\n"
             "8. USE ALL AVAILABLE DATA: You have ACWR, daily_load_acute,\n"
             "   daily_load_chronic, vo2_max_running, race_time_5k. Analyze them.\n"
             "   Don't ignore new columns just because they weren't there before.\n"
             "9. POSITIVE FINDINGS: Not everything is a problem. If RHR is improving,\n"
-            "   HRV is up, or ACWR is in the optimal zone ג€” say so prominently.\n"
+            "   HRV is up, or ACWR is in the optimal zone -- say so prominently.\n"
             "10. NO GENERIC ADVICE: Every recommendation must cite a specific\n"
             "    correlation, day pair, or metric value that supports it.\n"
             "    'Get better sleep' is not a recommendation. 'Your REM variance\n"
@@ -662,49 +693,75 @@ class AdvancedHealthAgents:
             "11. TRAINING READINESS BANDS (use exact labels):\n"
             "    0-25 poor/red, 26-50 low/orange, 51-75 moderate/green,\n"
             "    76-95 high/blue, 96-100 effective/purple.\n"
-            "ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•\n"
+            "12. NO UNSUBSTANTIATED CAUSALITY: Never say 'likely due to',\n"
+            "    'because of', or 'caused by' without citing specific supporting\n"
+            "    metrics. If underlying data is missing or ambiguous, say\n"
+            "    'reason unclear from available data'.\n"
+            "13. HYPOTHESIZE THEN VERIFY: The physiological knowledge below\n"
+            "    tells you what CAN affect what. Before claiming it DOES,\n"
+            "    check the correlation matrices and raw day-by-day data.\n"
+            "    If the data doesn't support the relationship for this user,\n"
+            "    say so -- even if the textbook says otherwise.\n"
+            "14. DIAGNOSTIC INVESTIGATION (MANDATORY FOR EVERY FINDING):\n"
+            "    Work like a doctor doing differential diagnosis. For EVERY\n"
+            "    metric you analyze, follow this layered process:\n"
+            "    LAYER 1 -- OUTCOME: What actually happened? State the fact.\n"
+            "    LAYER 2 -- SURFACE INPUTS: What factors COULD have influenced it?\n"
+            "      Check: stress, workout load, bb_drained, previous day activities,\n"
+            "      sleep duration. Note which align and which CONTRADICT the outcome.\n"
+            "    LAYER 3 -- UNDERLYING MECHANICS: What actually drove it?\n"
+            "      When surface inputs contradict the outcome, dig into deeper\n"
+            "      metrics: resting_hr_sleep, deep_sleep_sec, rem_sleep_sec,\n"
+            "      avg_respiration, hrv_last_night. These tell the real story.\n"
+            "    PRIORITY RULE: When Layer 2 contradicts Layer 1, you MUST\n"
+            "      check Layer 3 before drawing conclusions.\n"
+            "    COMPLETENESS RULE: Never stop at the first explanation that\n"
+            "      fits. Always check ALL available metrics before concluding.\n"
+            "      A single supporting metric is not enough -- look for\n"
+            "      convergent evidence across multiple metrics.\n"
+            "==============================================\n"
         )
 
         db_hint = (
-            "\n\nDATABASE COLUMN REFERENCE ג€” daily_metrics table\n"
+            "\n\nDATABASE COLUMN REFERENCE -- daily_metrics table\n"
             "(use ONLY these exact column names in SQL queries):\n\n"
             "  Heart & HRV:\n"
-            "    resting_hr ג€” resting heart rate (bpm, lower=fitter)\n"
-            "    hrv_last_night ג€” overnight HRV in ms (higher=better recovery)\n"
-            "    resting_hr_sleep ג€” HR during sleep\n\n"
+            "    resting_hr -- resting heart rate (bpm, lower=fitter)\n"
+            "    hrv_last_night -- overnight HRV in ms (higher=better recovery)\n"
+            "    resting_hr_sleep -- HR during sleep\n\n"
             "  Stress:\n"
-            "    stress_level ג€” daily avg stress 0-100 (lower=calmer)\n\n"
+            "    stress_level -- daily avg stress 0-100 (lower=calmer)\n\n"
             "  Sleep:\n"
-            "    sleep_score ג€” Garmin sleep quality 0-100\n"
+            "    sleep_score -- Garmin sleep quality 0-100\n"
             "    sleep_seconds, deep_sleep_sec, rem_sleep_sec, light_sleep_sec\n"
-            "    avg_respiration ג€” breaths/min during sleep\n"
-            "    body_battery_change ג€” BB gained during sleep\n\n"
+            "    avg_respiration -- breaths/min during sleep\n"
+            "    body_battery_change -- BB gained during sleep\n\n"
             "  Body Battery:\n"
-            "    bb_charged ג€” total energy recharged (higher=better rest)\n"
-            "    bb_drained ג€” total energy spent (proxy for daily load)\n"
-            "    bb_peak, bb_low ג€” daily max/min BB level\n\n"
+            "    bb_charged -- total energy recharged (higher=better rest)\n"
+            "    bb_drained -- total energy spent (proxy for daily load)\n"
+            "    bb_peak, bb_low -- daily max/min BB level\n\n"
             "  Activity & Steps:\n"
             "    total_steps, moderate_intensity_min, vigorous_intensity_min\n\n"
             "  Training Readiness:\n"
-            "    training_readiness ג€” Garmin readiness score 0-100\n"
+            "    training_readiness -- Garmin readiness score 0-100\n"
             "    Readiness bands: 0-25 poor/red, 26-50 low/orange,\n"
             "    51-75 moderate/green, 76-95 high/blue, 96-100 effective/purple\n"
-            "    tr_acute_load ג€” short-term training load (EPOC)\n\n"
+            "    tr_acute_load -- short-term training load (EPOC)\n\n"
             "  Cardio Fitness (from Garmin bulk data):\n"
-            "    vo2_max_running ג€” VO2Max for running (mL/kg/min, higher=fitter)\n"
-            "    vo2_max_running_delta ג€” 7-day change in VO2Max (positive=improving)\n"
-            "    vo2_max_cycling ג€” VO2Max for cycling\n"
-            "    race_time_5k ג€” predicted 5K time in seconds (lower=faster)\n"
-            "    race_time_10k ג€” predicted 10K time in seconds\n"
-            "    race_time_5k_delta ג€” 7-day change (negative=getting faster)\n\n"
+            "    vo2_max_running -- VO2Max for running (mL/kg/min, higher=fitter)\n"
+            "    vo2_max_running_delta -- 7-day change in VO2Max (positive=improving)\n"
+            "    vo2_max_cycling -- VO2Max for cycling\n"
+            "    race_time_5k -- predicted 5K time in seconds (lower=faster)\n"
+            "    race_time_10k -- predicted 10K time in seconds\n"
+            "    race_time_5k_delta -- 7-day change (negative=getting faster)\n\n"
             "  Training Load:\n"
-            "    daily_load_acute ג€” short-term load (7-day)\n"
-            "    daily_load_chronic ג€” long-term load (28-day)\n"
-            "    acwr ג€” acute:chronic workload ratio (<0.8 detraining, "
+            "    daily_load_acute -- short-term load (7-day)\n"
+            "    daily_load_chronic -- long-term load (28-day)\n"
+            "    acwr -- acute:chronic workload ratio (<0.8 detraining, "
             "0.8-1.3 optimal, >1.5 injury risk)\n\n"
             "  Environment:\n"
-            "    heat_acclimation_pct ג€” heat adaptation 0-100%\n"
-            "    altitude_acclimation ג€” altitude adaptation score\n\n"
+            "    heat_acclimation_pct -- heat adaptation 0-100%%\n"
+            "    altitude_acclimation -- altitude adaptation score\n\n"
             "  Weight: weight_kg\n\n"
             "  activities table columns:\n"
             "    activity_id, activity_type, distance_m, duration_sec,\n"
@@ -717,7 +774,87 @@ class AdvancedHealthAgents:
             "sleep_hours, body_battery_max, or training_load_balance.\n"
         )
 
-        ctx = f"{corr_block}{analysis_rules}{db_hint}"
+        # == Physiological investigation guide (hypothesis-driven) ==
+        physio_rules = (
+            "\n\n====== PHYSIOLOGICAL INVESTIGATION GUIDE ======\n"
+            "These are KNOWN RELATIONSHIPS to investigate. Each tells you\n"
+            "what CAN affect what. You MUST check the correlation matrices\n"
+            "and raw data to verify if it actually DOES for this user.\n"
+            "Never presume -- always verify.\n\n"
+            "A. RECOVERY & ANS -- WHAT TO INVESTIGATE:\n"
+            "- Body Battery can be affected by HRV, stress, AND sleep -- not\n"
+            "  just 'rest'. Check: does a rest day with high stress actually\n"
+            "  show BB recovery in the data?\n"
+            "- Lower RHR + higher HRV + lower stress can indicate\n"
+            "  parasympathetic dominance. Verify: do the same-day correlations\n"
+            "  confirm this for this user?\n"
+            "- Training Readiness is a composite (sleep, recovery time, HRV,\n"
+            "  stress, load). When it changes, decompose: which sub-metric\n"
+            "  actually drove the change? Check conditioned AR(1) data.\n"
+            "- HRV weekly trend (mean + CV) can be more informative than\n"
+            "  single readings. Check: does AR(1) persistence support this?\n\n"
+            "B. SLEEP -- WHAT TO INVESTIGATE:\n"
+            "- Deep sleep supports physical restoration; REM supports cognitive\n"
+            "  processing. Check: does deep_sleep_sec correlate with next-day\n"
+            "  training_readiness? Does rem_sleep_sec correlate with stress?\n"
+            "- Sleep score can predict next-day HRV, stress, readiness.\n"
+            "  Check: what does NEXT-DAY PREDICTORS actually show for sleep?\n"
+            "- Respiration >16/min during sleep can indicate elevated\n"
+            "  sympathetic tone. Check: does avg_respiration correlate with\n"
+            "  stress_level or hrv_last_night in the matrices?\n\n"
+            "C. CROSS-TRAINING -- WHAT TO INVESTIGATE:\n"
+            "When you see improvement in one sport, check if ANY of these\n"
+            "are supported by the data:\n"
+            "- Running can build cardiovascular fitness (check: running\n"
+            "  frequency vs resting_hr or vo2_max_running trends)\n"
+            "- Cycling provides aerobic base with low joint impact\n"
+            "  (check: cycling sessions vs next-day recovery metrics)\n"
+            "- Swimming can improve respiratory efficiency\n"
+            "  (check: swim sessions vs avg_respiration trends)\n"
+            "- Skiing demands eccentric strength + cardiovascular endurance\n"
+            "  (check: ski sessions vs bb_drained and recovery timeline)\n"
+            "- Gym/Strength can improve muscular economy across endurance\n"
+            "  sports (check: do weeks with gym show lower exercising HR\n"
+            "  in other sports? Check activities table avg_hr trends)\n"
+            "- Basketball/Team Sports provide natural interval training\n"
+            "  (check: sessions vs vo2_max changes)\n"
+            "- Yoga can enhance parasympathetic recovery (check: do yoga\n"
+            "  days show better next-day HRV or lower stress in lag-1?)\n"
+            "- Pilates can improve core stability and movement economy\n"
+            "  (check: sessions vs soreness in wellness_log)\n\n"
+            "D. WORKOUT QUALITY -- WHAT TO INVESTIGATE:\n"
+            "- Improving fitness shows as same/lower HR for same output.\n"
+            "  Check: query activities for SAME sport_type over time --\n"
+            "  is avg_hr trending down for similar distances?\n"
+            "- ACWR 0.8-1.3 is optimal. Check: where is ACWR now?\n"
+            "- Training effect per workout reflects stimulus quality.\n"
+            "  Check: how does aerobic_training_effect correlate with\n"
+            "  next-day metrics in this user's data?\n\n"
+            "E. STRESS & LIFESTYLE -- WHAT TO INVESTIGATE:\n"
+            "- Stress can impair sleep, HRV, and recovery. Check: what\n"
+            "  does same-day and lag-1 data show for stress_level?\n"
+            "- Mental stress + hard workout can compound. Check: do days\n"
+            "  with both high stress AND high bb_drained show worse\n"
+            "  next-day recovery than days with only one?\n"
+            "- Steps and stairs can promote active recovery.\n"
+            "  Check: does total_steps correlate with bb_charged?\n"
+            "- If caffeine/alcohol data exists in wellness_log,\n"
+            "  check their lag-1 impact on sleep_score and HRV.\n\n"
+            "F. MULTI-DAY EFFECTS -- WHAT TO INVESTIGATE:\n"
+            "- Recovery timing is individual. Check: MULTI-DAY CARRYOVER\n"
+            "  shows which lag (1, 2, or 3 days) is significant. This is\n"
+            "  the user's ACTUAL recovery timeline -- do NOT assume textbook.\n"
+            "- If lag-2 is significant but lag-1 is not, the effect takes\n"
+            "  2 days to manifest. Report that finding.\n"
+            "- Present raw day-by-day numbers and reference which lag the\n"
+            "  matrices say matters for each metric pair.\n"
+            "- Weekly patterns may exist but only report them if the sample\n"
+            "  size and correlation strength support them.\n"
+            "==============================================\n"
+        )
+
+        ctx = f"{corr_block}{analysis_rules}{physio_rules}{db_hint}"
+
 
         return [
             Task(
