@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.routes.helpers import (
+from routes.helpers import (
     _conn_str, _fetch_all, _fetch_one, _first_existing,
     _num, _text, _pick_row_value,
     _build_snapshot_payload, _build_history_rows,
@@ -31,7 +31,7 @@ from src.routes.helpers import (
 )
 
 try:
-    from src.pipeline.migrations import schema_audit
+    from pipeline.migrations import schema_audit
 except ImportError:
     schema_audit = None
 
