@@ -372,10 +372,10 @@ class CorrelationEngine:
         result["raw_results"] = {
             "pearson_pairs": [{"m1": p[0], "m2": p[1], "r": float(p[2]), "p": float(p[3]), "n": int(p[4])}
                               for p in sig_pairs] if sig_pairs else [],
-            "lag1_pairs": [{"m1": l[0], "m2": l[1], "r": float(l[2])}
+            "lag1_pairs": [{"m1": l[0], "m2": l[1], "r": float(l[2]), "p": float(l[3]), "n": int(l[4])}
                            for l in lag1_results] if lag1_results else [],
-            "ar1_results": {k: {"phi": float(v.get("phi", 0)), "r2": float(v.get("r2", 0))}
-                            for k, v in ar1_results.items()} if ar1_results else {},
+            "ar1_results": {a[0]: {"phi": float(a[1]), "r2": float(a[2])}
+                            for a in ar1_results} if ar1_results else {},
             "n_anomalies": len(anomalies),
             "n_cond_ar1": len(cond_ar1_results),
             "n_markov": len(markov_results),
@@ -899,7 +899,8 @@ class CorrelationEngine:
                 r = R0.loc[ci, cj]
                 p = P0.loc[ci, cj]
                 if not np.isnan(r) and p < 0.05 and abs(r) > 0.3:
-                    sig_pairs.append((ci, cj, r, p))
+                    n = len(data[[ci, cj]].dropna())
+                    sig_pairs.append((ci, cj, r, p, n))
         sig_pairs.sort(key=lambda x: abs(x[2]), reverse=True)
 
         # Lag-1
@@ -1325,10 +1326,12 @@ class CorrelationEngine:
 
         # Same-day correlations
         lines.append("[SAME-DAY CORRELATIONS (strongest pairs)]")
-        for a, b, r, p in sig_pairs[:12]:
+        for a, b, r, p, *rest in sig_pairs[:12]:
+            n = rest[0] if rest else None
             arrow = "ג†‘ג†‘" if r > 0 else "ג†‘ג†“"
             sig = "***" if p < 0.01 else ("**" if p < 0.05 else "*")
-            lines.append(f"  {arrow} {a} ֳ— {b}: r={r:+.3f} (p={p:.4f}) {sig}")
+            n_str = f", n={n}" if n is not None else ""
+            lines.append(f"  {arrow} {a} ֳ— {b}: r={r:+.3f} (p={p:.4f}{n_str}) {sig}")
         lines.append("")
 
         # Next-day predictors
