@@ -5,9 +5,11 @@ Route handlers are defined here; shared utilities live in routes/helpers.py.
 """
 
 from __future__ import annotations
-
+import uuid
+from fastapi import BackgroundTasks
 import logging
 import os
+os.environ["CREWAI_DISABLE_SIGTERM"] = "true"
 import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
@@ -535,25 +537,24 @@ def insights_latest() -> Dict[str, Any]:
 # Rate limit decorator (no-op if slowapi not installed)
 _rate_limit = _limiter.limit("5/minute") if _HAS_SLOWAPI and _limiter else lambda f: f
 
+# מילון בזיכרון לשמירת מצב המשימות והתשובות
+active_chat_jobs: Dict[str, Dict[str, Any]] = {}
 
-@app.post("/api/v1/chat")
-@_rate_limit
-def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
-    message = body.message.strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message is required")
-
+def run_chat_agent_background(job_id: str, message: str):
+    """
+    פונקציה זו רצה ברקע, מפעילה את הסוכנים, ושומרת את התוצאה במילון.
+    """
     try:
         from crewai import Agent, Crew, Process, Task
         try:
             from src.enhanced_agents import (
                 _get_llm, analyze_pattern, calculate_correlation,
-                find_best_days, run_sql_query, EnhancedAgentCrew
+                find_best_days, run_sql_query, AdvancedHealthAgents
             )
         except Exception:
             from enhanced_agents import (
                 _get_llm, analyze_pattern, calculate_correlation,
-                find_best_days, run_sql_query, EnhancedAgentCrew
+                find_best_days, run_sql_query, AdvancedHealthAgents
             )
 
         # ── Part 1: Complexity Routing ──
@@ -566,20 +567,19 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         ]
         is_complex = any(kw in message.lower() for kw in COMPLEX_KEYWORDS)
 
+        answer = ""
+
         if is_complex:
-            # For complex questions, we run the full multi-agent crew
             try:
                 import time
-                crew_builder = EnhancedAgentCrew()
+                crew_builder = AdvancedHealthAgents()
                 tasks = crew_builder.create_deep_analysis_tasks(analysis_period=30)
                 
-                # Prepend the user's question to the final synthesizer task
                 synth_task = tasks[-1]
                 synth_task.description = f"USER QUESTION: {message}\n\n" + synth_task.description
                 
                 agents = [t.agent for t in tasks]
                 accumulated_text = ""
-                final_answer = ""
                 
                 for idx, (agent, task) in enumerate(zip(agents, tasks)):
                     if "Synthesizer" in agent.role:
@@ -598,116 +598,140 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
                     accumulated_text += f"\n--- {agent.role} ---\n{raw_text}\n"
                     
                     if "Synthesizer" in agent.role:
-                        final_answer = raw_text
+                        answer = raw_text
                         
                     if idx < len(agents) - 1:
-                        time.sleep(20)
+                        time.sleep(1) # הורדנו את ההמתנה הארוכה כי אנחנו ברקע!
                         
-                return {
-                    "answer": final_answer,
-                    "response": final_answer,
-                    "message": final_answer,
-                    "text": final_answer,
-                    "output": final_answer,
-                }
-            except Exception as e:
-                # Fall through to the simple agent on error
-                pass
+            except Exception:
+                pass # יפול לסוכן הפשוט
 
         # ── Part 2: Upgraded Simple Agent ──
-        try:
-            from routes.helpers import _fetch_one, _conn_str
-            baselines = _fetch_one("""
-                SELECT 
-                    ROUND(AVG(sleep_score)::numeric, 1) AS avg_sleep,
-                    ROUND(AVG(training_readiness)::numeric, 1) AS avg_readiness,
-                    ROUND(AVG(hrv_last_night)::numeric, 1) AS avg_hrv,
-                    ROUND(AVG(stress_level)::numeric, 1) AS avg_stress,
-                    ROUND(AVG(resting_hr)::numeric, 1) AS avg_rhr,
-                    ROUND(AVG(total_steps)::numeric, 0) AS avg_steps,
-                    ROUND(AVG(bb_charged)::numeric, 1) AS avg_bb_charged
-                FROM daily_metrics
-                WHERE date >= CURRENT_DATE - INTERVAL '30 days'
-            """)
-            baseline_ctx = (
-                f"\n\nUSER'S 30-DAY BASELINES: "
-                f"sleep_score={baselines.get('avg_sleep')}, "
-                f"training_readiness={baselines.get('avg_readiness')}, "
-                f"HRV={baselines.get('avg_hrv')}ms, "
-                f"stress={baselines.get('avg_stress')}, "
-                f"RHR={baselines.get('avg_rhr')}bpm, "
-                f"steps={baselines.get('avg_steps')}, "
-                f"BB_charged={baselines.get('avg_bb_charged')}"
+        if not answer:
+            try:
+                from routes.helpers import _fetch_one
+                baselines = _fetch_one("""
+                    SELECT 
+                        ROUND(AVG(sleep_score)::numeric, 1) AS avg_sleep,
+                        ROUND(AVG(training_readiness)::numeric, 1) AS avg_readiness,
+                        ROUND(AVG(hrv_last_night)::numeric, 1) AS avg_hrv,
+                        ROUND(AVG(stress_level)::numeric, 1) AS avg_stress,
+                        ROUND(AVG(resting_hr)::numeric, 1) AS avg_rhr,
+                        ROUND(AVG(total_steps)::numeric, 0) AS avg_steps,
+                        ROUND(AVG(bb_charged)::numeric, 1) AS avg_bb_charged
+                    FROM daily_metrics
+                    WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+                """)
+                baseline_ctx = (
+                    f"\n\nUSER'S 30-DAY BASELINES: "
+                    f"sleep_score={baselines.get('avg_sleep')}, "
+                    f"training_readiness={baselines.get('avg_readiness')}, "
+                    f"HRV={baselines.get('avg_hrv')}ms, "
+                    f"stress={baselines.get('avg_stress')}, "
+                    f"RHR={baselines.get('avg_rhr')}bpm, "
+                    f"steps={baselines.get('avg_steps')}, "
+                    f"BB_charged={baselines.get('avg_bb_charged')}"
+                )
+            except Exception:
+                baseline_ctx = ""
+
+            try:
+                temp_crew = AdvancedHealthAgents()
+                full_rules_ctx = temp_crew.ctx
+            except Exception:
+                full_rules_ctx = "RULES: Maintain a strict evidentiary diagnostic approach."
+
+            agent = Agent(
+                role="Diagnostic Health Analyst",
+                goal="Answer user questions using strict 3-layer diagnostic reasoning.",
+                backstory=(
+                    "You are an elite diagnostic health analyst.\n"
+                    f"{full_rules_ctx}\n\n"
+                    "CHAT RULES:\n"
+                    "1. Keep answers conversational but deeply analytical.\n"
+                    "2. NO generic advice. NEVER say 'likely due to'. Use empirical data.\n"
+                    "3. Convert raw seconds to hours/minutes."
+                ),
+                verbose=False,
+                allow_delegation=False,
+                tools=[run_sql_query, calculate_correlation, find_best_days, analyze_pattern],
+                llm=_get_llm(),
             )
-        except Exception:
-            baseline_ctx = ""
 
-        # Load the exact rules block the weekly pipeline uses
-        # We instantiate a temporary crew just to get its context string
-        try:
-            temp_crew = EnhancedAgentCrew()
-            full_rules_ctx = temp_crew.ctx
-        except Exception:
-            full_rules_ctx = "RULES: Maintain a strict evidentiary diagnostic approach."
+            task = Task(
+                description=(
+                    f"User question: {message}"
+                    f"{baseline_ctx}"
+                    "\n\nSTEPS:\n"
+                    "1. Query the relevant data from daily_metrics (include today, yesterday AND the day before)\n"
+                    "2. LAYER 1: State what happened (the surface fact)\n"
+                    "3. LAYER 2: Evaluate adjacent variables (training_load, BB drained, stress, prep data)\n"
+                    "4. LAYER 3: Investigate mechanics (HRV, sleeping HR, deep sleep, respiration)\n"
+                    "5. Follow the timeline: For causal questions ('what caused X'), do not stop at yesterday. Trace the data chronologically backwards to find where the shift originated.\n"
+                    "6. Write your final answer.\n\n"
+                    "MANDATORY OUTPUT FORMAT:\n"
+                    "You MUST format your output using these exact headers:\n"
+                    "### The Facts (Layer 1)\n"
+                    "### Surface Drivers (Layer 2)\n"
+                    "### Deep Mechanics (Layer 3)\n"
+                    "### Conclusion\n\n"
+                    "FORBIDDEN: 'likely due to', 'probably because', 'caused by' without naming the exact metric."
+                ),
+                expected_output="A diagnostic answer strictly following the 4 mandatory markdown headers."
+            )
 
-        agent = Agent(
-            role="Diagnostic Health Analyst",
-            goal="Answer user questions using strict 3-layer diagnostic reasoning.",
-            backstory=(
-                "You are an elite diagnostic health analyst.\n"
-                f"{full_rules_ctx}\n\n"
-                "CHAT RULES:\n"
-                "1. Keep answers conversational but deeply analytical.\n"
-                "2. NO generic advice. NEVER say 'likely due to'. Use empirical data.\n"
-                "3. Convert raw seconds to hours/minutes."
-            ),
-            verbose=False,
-            allow_delegation=False,
-            tools=[run_sql_query, calculate_correlation, find_best_days, analyze_pattern],
-            llm=_get_llm(),
-        )
+            result = Crew(
+                agents=[agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=False,
+            ).kickoff()
+            answer = getattr(result, "raw", str(result))
 
-        task = Task(
-            description=(
-                f"User question: {message}"
-                f"{baseline_ctx}"
-                "\n\nSTEPS:\n"
-                "1. Query the relevant data from daily_metrics (include today, yesterday AND the day before)\n"
-                "2. LAYER 1: State what happened (the surface fact)\n"
-                "3. LAYER 2: Evaluate adjacent variables (training_load, BB drained, stress, prep data)\n"
-                "4. LAYER 3: Investigate mechanics (HRV, sleeping HR, deep sleep, respiration)\n"
-                "5. Follow the timeline: For causal questions ('what caused X'), do not stop at yesterday. Trace the data chronologically backwards to find where the shift originated.\n"
-                "6. Write your final answer.\n\n"
-                "MANDATORY OUTPUT FORMAT:\n"
-                "You MUST format your output using these exact headers:\n"
-                "### The Facts (Layer 1)\n"
-                "### Surface Drivers (Layer 2)\n"
-                "### Deep Mechanics (Layer 3)\n"
-                "### Conclusion\n\n"
-                "FORBIDDEN: 'likely due to', 'probably because', 'caused by' without naming the exact metric."
-            ),
-            expected_output=(
-                "A diagnostic answer strictly following the 4 mandatory markdown headers, citing specific dates/numbers, "
-                "comparing to baselines, and flagging contradictions."
-            ),
-        )
+        # עדכון המילון כשהכל הסתיים בהצלחה
+        active_chat_jobs[job_id] = {
+            "status": "completed",
+            "answer": answer,
+            "response": answer,
+            "message": answer,
+            "text": answer,
+            "output": answer,
+        }
 
-        result = Crew(
-            agents=[agent],
-            tasks=[task],
-            process=Process.sequential,
-            verbose=False,
-        ).kickoff()
-        answer = getattr(result, "raw", str(result))
     except Exception as e:
-        answer = _fallback_chat(message)
+        # במקרה של קריסה מלאה, נשתמש בסוכן הגיבוי ונשמור את תשובתו
+        fallback = _fallback_chat(message)
+        active_chat_jobs[job_id] = {
+            "status": "completed",
+            "answer": fallback,
+            "response": fallback,
+            "message": fallback,
+            "text": fallback,
+            "output": fallback,
+            "error": str(e) # לשם דיבוג אם תצטרך
+        }
 
+@app.post("/api/v1/chat")
+@_rate_limit
+def chat(body: ChatRequest, request: Request, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    # 1. יצירת מזהה ייחודי לבקשה
+    job_id = str(uuid.uuid4())
+    
+    # 2. רישום המשימה במילון כ"מעובדת"
+    active_chat_jobs[job_id] = {"status": "processing"}
+
+    # 3. שיגור הפונקציה הכבדה לריצה ב-Background Thread
+    background_tasks.add_task(run_chat_agent_background, job_id, message)
+
+    # 4. החזרת תשובה ל-Frontend תוך חלקיק שנייה! (Heroku מרוצה)
     return {
-        "answer": answer,
-        "response": answer,
-        "message": answer,
-        "text": answer,
-        "output": answer,
+        "job_id": job_id,
+        "status": "processing",
+        "message": "Agent is thinking..."
     }
 
 @app.get("/api/v1/admin/migration-audit")
@@ -718,3 +742,12 @@ def migration_audit() -> Dict[str, Any]:
         return schema_audit(_conn_str())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/chat/status/{job_id}")
+def get_chat_status(job_id: str) -> Dict[str, Any]:
+    job_data = active_chat_jobs.get(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    
+    return job_data
