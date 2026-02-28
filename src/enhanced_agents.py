@@ -1044,13 +1044,21 @@ class AdvancedHealthAgents:
     
     def run_comprehensive_analysis(self, analysis_period: int = 30) -> str:
         """Run full analysis with all agents"""
-        
+        import time
         log.info("\n" + "="*60)
-        log.info("נ₪– RUNNING COMPREHENSIVE HEALTH ANALYSIS")
+        log.info("  RUNNING COMPREHENSIVE HEALTH ANALYSIS (unchained for rate limits)")
         log.info("   This will take a few minutes...")
         log.info("="*60 + "\n")
         
         tasks = self.create_deep_analysis_tasks(analysis_period)
+
+        agents = [
+            self.statistical_interpreter,
+            self.health_pattern_analyst,
+            self.performance_recovery,
+            self.sleep_lifestyle,
+            self.synthesizer,
+        ]
 
         agent_labels = [
             "STATISTICAL INTERPRETATION (Interpreter)",
@@ -1060,30 +1068,37 @@ class AdvancedHealthAgents:
             "BOTTLENECK & QUICK WINS (Synthesizer)",
         ]
 
-        crew = Crew(
-            agents=[
-                self.statistical_interpreter,
-                self.health_pattern_analyst,
-                self.performance_recovery,
-                self.sleep_lifestyle,
-                self.synthesizer,
-            ],
-            tasks=tasks,
-            process=Process.sequential,
-            verbose=True,
-        )
-
-        result = crew.kickoff()
-
-        # Combine ALL agent outputs, not just the last one
         sections = []
-        try:
-            for label, task_out in zip(agent_labels, result.tasks_output):
-                raw = getattr(task_out, "raw", str(task_out))
-                sections.append(f"{'='*60}\n  {label}\n{'='*60}\n\n{raw}")
-        except Exception:
-            # Fallback: if tasks_output isn't available, return raw result
-            return str(result)
+        accumulated_text = ""
+
+        for idx, (agent, task, label) in enumerate(zip(agents, tasks, agent_labels)):
+            log.info(f"Starting Agent {idx+1}/5: {label}")
+            
+            if "Synthesizer" in label:
+                task.description += f"\n\n=== PREVIOUS AGENT FINDINGS ===\n{accumulated_text}"
+
+            single_crew = Crew(
+                agents=[agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=True
+            )
+            
+            out = single_crew.kickoff()
+            raw_text = getattr(out, "raw", str(out))
+            
+            try:
+                tokens = out.token_usage.prompt_tokens
+                log.info(f"TOKEN TRACKER: {label} consumed {tokens} input tokens.")
+            except Exception:
+                pass
+                
+            sections.append(f"{'='*60}\n  {label}\n{'='*60}\n\n{raw_text}")
+            accumulated_text += f"\n--- {label} ---\n{raw_text}\n"
+                
+            if idx < len(agents) - 1:
+                log.info("Sleeping for 20 seconds to respect Google Gemini 1M token/min rate limit...")
+                time.sleep(20)
 
         combined = "\n\n".join(sections)
         log.info(f"\n  Combined output: {len(combined)} chars from {len(sections)} agents")
@@ -1112,14 +1127,23 @@ class AdvancedHealthAgents:
         Returns the combined text output from all agents.
         Also parses Synthesizer recommendations for DB persistence.
         """
+        import time
         log.info("\n" + "="*60)
-        log.info("  RUNNING WEEKLY SUMMARY (5 agents)")
+        log.info("  RUNNING WEEKLY SUMMARY (5 agents, unchained for rate limits)")
         log.info("="*60 + "\n")
 
         tasks = self.create_weekly_summary_tasks(
             matrix_context=matrix_context,
             comparison_context=comparison_context,
         )
+
+        agents = [
+            self.statistical_interpreter,
+            self.health_pattern_analyst,
+            self.performance_recovery,
+            self.sleep_lifestyle,
+            self.synthesizer,
+        ]
 
         agent_labels = [
             "STATISTICAL INTERPRETATION (Interpreter)",
@@ -1129,32 +1153,42 @@ class AdvancedHealthAgents:
             "BOTTLENECK & QUICK WINS (Synthesizer)",
         ]
 
-        crew = Crew(
-            agents=[
-                self.statistical_interpreter,
-                self.health_pattern_analyst,
-                self.performance_recovery,
-                self.sleep_lifestyle,
-                self.synthesizer,
-            ],
-            tasks=tasks,
-            process=Process.sequential,
-            verbose=True,
-        )
-
-        result = crew.kickoff()
-
-        # Combine ALL agent outputs
         sections = []
         synthesizer_output = ""
-        try:
-            for label, task_out in zip(agent_labels, result.tasks_output):
-                raw = getattr(task_out, "raw", str(task_out))
-                sections.append(f"{'='*60}\n  {label}\n{'='*60}\n\n{raw}")
-                if "Synthesizer" in label:
-                    synthesizer_output = raw
-        except Exception:
-            return str(result)
+        accumulated_text = ""
+
+        for idx, (agent, task, label) in enumerate(zip(agents, tasks, agent_labels)):
+            log.info(f"Starting Agent {idx+1}/5: {label}")
+            
+            # If this is the synthesizer, inject the accumulated text
+            if "Synthesizer" in label:
+                task.description += f"\n\n=== PREVIOUS AGENT FINDINGS ===\n{accumulated_text}"
+
+            single_crew = Crew(
+                agents=[agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=True
+            )
+            
+            out = single_crew.kickoff()
+            raw_text = getattr(out, "raw", str(out))
+            
+            try:
+                tokens = out.token_usage.prompt_tokens
+                log.info(f"TOKEN TRACKER: {label} consumed {tokens} input tokens.")
+            except Exception:
+                pass
+                
+            sections.append(f"{'='*60}\n  {label}\n{'='*60}\n\n{raw_text}")
+            accumulated_text += f"\n--- {label} ---\n{raw_text}\n"
+            
+            if "Synthesizer" in label:
+                synthesizer_output = raw_text
+                
+            if idx < len(agents) - 1:
+                log.info("Sleeping for 20 seconds to respect Google Gemini 1M token/min rate limit...")
+                time.sleep(20)
 
         # Parse and save structured recommendations from Synthesizer
         recs = self._parse_recommendations(synthesizer_output)
