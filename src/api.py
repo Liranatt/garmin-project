@@ -555,24 +555,83 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
                 _get_llm, analyze_pattern, calculate_correlation,
                 find_best_days, run_sql_query,
             )
+        # Pre-fetch user baselines for context
+        try:
+            from routes.helpers import _fetch_one
+            baselines = _fetch_one("""
+                SELECT 
+                    ROUND(AVG(sleep_score)::numeric, 1) AS avg_sleep,
+                    ROUND(AVG(training_readiness)::numeric, 1) AS avg_readiness,
+                    ROUND(AVG(hrv_last_night)::numeric, 1) AS avg_hrv,
+                    ROUND(AVG(stress_level)::numeric, 1) AS avg_stress,
+                    ROUND(AVG(resting_hr)::numeric, 1) AS avg_rhr,
+                    ROUND(AVG(total_steps)::numeric, 0) AS avg_steps,
+                    ROUND(AVG(bb_charged)::numeric, 1) AS avg_bb_charged
+                FROM daily_metrics
+                WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+            """)
+            baseline_ctx = (
+                f"\n\nUSER'S 30-DAY BASELINES: "
+                f"sleep_score={baselines.get('avg_sleep')}, "
+                f"training_readiness={baselines.get('avg_readiness')}, "
+                f"HRV={baselines.get('avg_hrv')}ms, "
+                f"stress={baselines.get('avg_stress')}, "
+                f"RHR={baselines.get('avg_rhr')}bpm, "
+                f"steps={baselines.get('avg_steps')}, "
+                f"BB_charged={baselines.get('avg_bb_charged')}"
+            )
+        except Exception:
+            baseline_ctx = ""
 
         agent = Agent(
             role="Health Data Analyst",
             goal="Answer with concise, data-backed insights from Garmin data.",
             backstory=(
-                "You analyze daily_metrics and activities in PostgreSQL. "
-                "Use SQL evidence and keep the answer concise."
-            ),
+    "You are a personal health data analyst with access to the user's "
+    "Garmin daily_metrics and activities tables in PostgreSQL. "
+    "\n\nRULES:"
+    "\n1. ALWAYS convert raw values to human units: seconds→hours/minutes, "
+    "meters→km. Never show raw seconds to the user."
+    "\n2. CHALLENGE false premises: if the user says 'good sleep' but "
+    "sleep_score < 70, politely note this. Scores: <50 poor, 50-69 fair, "
+    "70-84 good, 85+ excellent."
+    "\n3. DATA QUALITY: sleep_score<40, rem_sleep_sec=0, or "
+    "training_readiness=1 likely means tracking failure (watch removed). "
+    "Flag as SUSPECT DATA."
+    "\n4. COMPARE TO PERSONAL BASELINE: always query the user's 30-day "
+    "average for any metric you discuss, so you can say 'above/below your average'."
+    "\n5. THINK CAUSALLY: if asked 'what caused X', look at the PREVIOUS "
+    "day's metrics (stress, steps, activity) — not just same-day."
+    "\n6. Training readiness bands: 0-25 poor/red, 26-50 low/orange, "
+    "51-75 moderate/green, 76-95 high/blue."
+    "\n7. Keep answers conversational but backed by specific numbers."
+    "/n8. this is an example. you should based your answers on the database and on the user queries."
+    "/n9. if the user says he's good at something or that somethhing that went well always check the database to see if it is true. if it is not true, politely correct the user."
+),
             verbose=False,
             allow_delegation=False,
             tools=[run_sql_query, calculate_correlation, find_best_days, analyze_pattern],
             llm=_get_llm(),
         )
         task = Task(
-            description=f"Answer this user question with concrete numbers when possible: {message}",
-            agent=agent,
-            expected_output="Concise answer with concrete evidence.",
-        )
+        description=(
+            f"User question: {message}"
+            f"{baseline_ctx}"
+            "\n\nSTEPS:"
+            "\n1. Query the relevant data from daily_metrics (include yesterday AND the day before)"
+            "\n2. Convert all raw values to human units (seconds→min/hours)"
+            "\n3. Compare values to the user's 30-day baselines above"
+            "\n4. If the user makes a claim ('slept good', 'stressed'), verify it against the actual score"
+            "\n5. For 'what caused/benefited X' questions, check the PREVIOUS day's activity, stress, and steps"
+            "\n6. Give a clear, conversational answer with specific numbers"
+        ),
+        expected_output=(
+            "A conversational answer that: (1) uses human-readable units, "
+            "(2) compares to personal baselines, (3) challenges incorrect assumptions, "
+            "(4) identifies likely causal factors from prior-day data."
+        ),
+    )
+
         result = Crew(
             agents=[agent],
             tasks=[task],
