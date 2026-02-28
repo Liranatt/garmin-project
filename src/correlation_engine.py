@@ -370,9 +370,9 @@ class CorrelationEngine:
         result["summary"] = summary
         # Attach raw layer data for storage (JSON-safe)
         result["raw_results"] = {
-            "pearson_pairs": [{"m1": p[0], "m2": p[1], "r": float(p[2]), "p": float(p[3]), "n": int(p[4])}
+            "pearson_pairs": [{"m1": p[0], "m2": p[1], "r": float(p[2]), "p": float(p[3]), "n": int(p[4]) if len(p) > 4 else 0}
                               for p in sig_pairs] if sig_pairs else [],
-            "lag1_pairs": [{"m1": l[0], "m2": l[1], "r": float(l[2]), "p": float(l[3]), "n": int(l[4])}
+            "lag1_pairs": [{"m1": l[0], "m2": l[1], "r": float(l[2]), "p": float(l[3]) if len(l) > 3 else 0, "n": int(l[4]) if len(l) > 4 else 0}
                            for l in lag1_results] if lag1_results else [],
             "ar1_results": {a[0]: {"phi": float(a[1]), "r2": float(a[2])}
                             for a in ar1_results} if ar1_results else {},
@@ -1243,7 +1243,7 @@ class CorrelationEngine:
         results = []
         window = 30
 
-        for a, b, r_overall, p in sig_pairs[:10]:
+        for a, b, r_overall, p, *_rest in sig_pairs[:10]:
             sub = data[[a, b]].dropna()
             if len(sub) < window + 5:
                 continue
