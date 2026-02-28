@@ -548,16 +548,55 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         try:
             from src.enhanced_agents import (
                 _get_llm, analyze_pattern, calculate_correlation,
-                find_best_days, run_sql_query,
+                find_best_days, run_sql_query, EnhancedAgentCrew
             )
         except Exception:
             from enhanced_agents import (
                 _get_llm, analyze_pattern, calculate_correlation,
-                find_best_days, run_sql_query,
+                find_best_days, run_sql_query, EnhancedAgentCrew
             )
-        # Pre-fetch user baselines for context
+
+        # ── Part 1: Complexity Routing ──
+        COMPLEX_KEYWORDS = [
+            "report", "compare", "analysis", "deep dive", "breakdown",
+            "trend", "over time", "getting better", "getting worse",
+            "overtraining", "recovery pattern", "what affects",
+            "cross-training", "all my workouts", "weekly", "summarize",
+            "correlate", "in depth", "in-depth"
+        ]
+        is_complex = any(kw in message.lower() for kw in COMPLEX_KEYWORDS)
+
+        if is_complex:
+            # For complex questions, we run the full multi-agent crew
+            try:
+                crew_builder = EnhancedAgentCrew()
+                tasks = crew_builder.create_deep_analysis_tasks(analysis_period=30)
+                
+                # Prepend the user's question to the final synthesizer task
+                synth_task = tasks[-1]
+                synth_task.description = f"USER QUESTION: {message}\n\n" + synth_task.description
+                
+                result = Crew(
+                    agents=[t.agent for t in tasks],
+                    tasks=tasks,
+                    process=Process.sequential,
+                    verbose=False,
+                ).kickoff()
+                answer = getattr(result, "raw", str(result))
+                return {
+                    "answer": answer,
+                    "response": answer,
+                    "message": answer,
+                    "text": answer,
+                    "output": answer,
+                }
+            except Exception as e:
+                # Fall through to the simple agent on error
+                pass
+
+        # ── Part 2: Upgraded Simple Agent ──
         try:
-            from routes.helpers import _fetch_one
+            from routes.helpers import _fetch_one, _conn_str
             baselines = _fetch_one("""
                 SELECT 
                     ROUND(AVG(sleep_score)::numeric, 1) AS avg_sleep,
@@ -583,54 +622,65 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         except Exception:
             baseline_ctx = ""
 
+        # Load latest correlation summary from DB
+        corr_summary = ""
+        try:
+            import psycopg2
+            from routes.helpers import _conn_str
+            conn = psycopg2.connect(_conn_str())
+            cur = conn.cursor()
+            cur.execute("SELECT summary_text FROM matrix_summaries ORDER BY computed_at DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                corr_summary = f"\n\nLATEST CORRELATION MATRIX DATA:\n{row[0]}"
+            conn.close()
+        except Exception:
+            pass
+
+        # Load the exact rules block the weekly pipeline uses
+        # We instantiate a temporary crew just to get its context string
+        try:
+            temp_crew = EnhancedAgentCrew()
+            full_rules_ctx = temp_crew.ctx
+        except Exception:
+            full_rules_ctx = "RULES: Maintain a strict evidentiary diagnostic approach."
+
         agent = Agent(
-            role="Health Data Analyst",
-            goal="Answer with concise, data-backed insights from Garmin data.",
+            role="Diagnostic Health Analyst",
+            goal="Answer user questions using strict 3-layer diagnostic reasoning.",
             backstory=(
-    "You are a personal health data analyst with access to the user's "
-    "Garmin daily_metrics and activities tables in PostgreSQL. "
-    "\n\nRULES:"
-    "\n1. ALWAYS convert raw values to human units: seconds→hours/minutes, "
-    "meters→km. Never show raw seconds to the user."
-    "\n2. CHALLENGE false premises: if the user says 'good sleep' but "
-    "sleep_score < 70, politely note this. Scores: <50 poor, 50-69 fair, "
-    "70-84 good, 85+ excellent."
-    "\n3. DATA QUALITY: sleep_score<40, rem_sleep_sec=0, or "
-    "training_readiness=1 likely means tracking failure (watch removed). "
-    "Flag as SUSPECT DATA."
-    "\n4. COMPARE TO PERSONAL BASELINE: always query the user's 30-day "
-    "average for any metric you discuss, so you can say 'above/below your average'."
-    "\n5. THINK CAUSALLY: if asked 'what caused X', look at the PREVIOUS "
-    "day's metrics (stress, steps, activity) — not just same-day."
-    "\n6. Training readiness bands: 0-25 poor/red, 26-50 low/orange, "
-    "51-75 moderate/green, 76-95 high/blue."
-    "\n7. Keep answers conversational but backed by specific numbers."
-    "/n8. this is an example. you should based your answers on the database and on the user queries."
-    "/n9. if the user says he's good at something or that somethhing that went well always check the database to see if it is true. if it is not true, politely correct the user."
-),
+                "You are an elite diagnostic health analyst.\n"
+                f"{full_rules_ctx}\n\n"
+                "CHAT RULES:\n"
+                "1. Keep answers conversational but deeply analytical.\n"
+                "2. NO generic advice. NEVER say 'likely due to'. Use empirical data.\n"
+                "3. Convert raw seconds to hours/minutes."
+            ),
             verbose=False,
             allow_delegation=False,
             tools=[run_sql_query, calculate_correlation, find_best_days, analyze_pattern],
             llm=_get_llm(),
         )
+
         task = Task(
-        description=(
-            f"User question: {message}"
-            f"{baseline_ctx}"
-            "\n\nSTEPS:"
-            "\n1. Query the relevant data from daily_metrics (include yesterday AND the day before)"
-            "\n2. Convert all raw values to human units (seconds→min/hours)"
-            "\n3. Compare values to the user's 30-day baselines above"
-            "\n4. If the user makes a claim ('slept good', 'stressed'), verify it against the actual score"
-            "\n5. For 'what caused/benefited X' questions, check the PREVIOUS day's activity, stress, and steps"
-            "\n6. Give a clear, conversational answer with specific numbers"
-        ),
-        expected_output=(
-            "A conversational answer that: (1) uses human-readable units, "
-            "(2) compares to personal baselines, (3) challenges incorrect assumptions, "
-            "(4) identifies likely causal factors from prior-day data."
-        ),
-    )
+            description=(
+                f"User question: {message}"
+                f"{baseline_ctx}"
+                f"{corr_summary}"
+                "\n\nSTEPS:\n"
+                "1. Query the relevant data from daily_metrics (include today, yesterday AND the day before)\n"
+                "2. LAYER 1: State what happened (the surface fact)\n"
+                "3. LAYER 2: Evaluate adjacent variables (training_load, BB drained, stress, prep data)\n"
+                "4. LAYER 3: Investigate mechanics (HRV, sleeping HR, deep sleep, respiration)\n"
+                "5. Follow the timeline: For causal questions ('what caused X'), do not stop at yesterday. Trace the data chronologically backwards to find where the shift originated.\n"
+                "6. Write a conversational empirical answer.\n\n"
+                "FORBIDDEN: 'likely due to', 'probably because', 'caused by' without naming the exact metric."
+            ),
+            expected_output=(
+                "A conversational answer that uses 3-layer diagnostics, cites specific dates/numbers, "
+                "compares to baselines, and flags contradictions."
+            ),
+        )
 
         result = Crew(
             agents=[agent],
@@ -639,7 +689,7 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
             verbose=False,
         ).kickoff()
         answer = getattr(result, "raw", str(result))
-    except Exception:
+    except Exception as e:
         answer = _fallback_chat(message)
 
     return {
@@ -649,7 +699,6 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         "text": answer,
         "output": answer,
     }
-
 
 @app.get("/api/v1/admin/migration-audit")
 def migration_audit() -> Dict[str, Any]:
