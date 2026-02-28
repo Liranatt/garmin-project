@@ -569,6 +569,7 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         if is_complex:
             # For complex questions, we run the full multi-agent crew
             try:
+                import time
                 crew_builder = EnhancedAgentCrew()
                 tasks = crew_builder.create_deep_analysis_tasks(analysis_period=30)
                 
@@ -576,19 +577,38 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
                 synth_task = tasks[-1]
                 synth_task.description = f"USER QUESTION: {message}\n\n" + synth_task.description
                 
-                result = Crew(
-                    agents=[t.agent for t in tasks],
-                    tasks=tasks,
-                    process=Process.sequential,
-                    verbose=False,
-                ).kickoff()
-                answer = getattr(result, "raw", str(result))
+                agents = [t.agent for t in tasks]
+                accumulated_text = ""
+                final_answer = ""
+                
+                for idx, (agent, task) in enumerate(zip(agents, tasks)):
+                    if "Synthesizer" in agent.role:
+                        task.description += f"\n\n=== PREVIOUS AGENT FINDINGS ===\n{accumulated_text}"
+                        
+                    single_crew = Crew(
+                        agents=[agent],
+                        tasks=[task],
+                        process=Process.sequential,
+                        verbose=False
+                    )
+                    
+                    out = single_crew.kickoff()
+                    raw_text = getattr(out, "raw", str(out))
+                    
+                    accumulated_text += f"\n--- {agent.role} ---\n{raw_text}\n"
+                    
+                    if "Synthesizer" in agent.role:
+                        final_answer = raw_text
+                        
+                    if idx < len(agents) - 1:
+                        time.sleep(20)
+                        
                 return {
-                    "answer": answer,
-                    "response": answer,
-                    "message": answer,
-                    "text": answer,
-                    "output": answer,
+                    "answer": final_answer,
+                    "response": final_answer,
+                    "message": final_answer,
+                    "text": final_answer,
+                    "output": final_answer,
                 }
             except Exception as e:
                 # Fall through to the simple agent on error
@@ -622,21 +642,6 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
         except Exception:
             baseline_ctx = ""
 
-        # Load latest correlation summary from DB
-        corr_summary = ""
-        try:
-            import psycopg2
-            from routes.helpers import _conn_str
-            conn = psycopg2.connect(_conn_str())
-            cur = conn.cursor()
-            cur.execute("SELECT summary_text FROM matrix_summaries ORDER BY computed_at DESC LIMIT 1")
-            row = cur.fetchone()
-            if row:
-                corr_summary = f"\n\nLATEST CORRELATION MATRIX DATA:\n{row[0]}"
-            conn.close()
-        except Exception:
-            pass
-
         # Load the exact rules block the weekly pipeline uses
         # We instantiate a temporary crew just to get its context string
         try:
@@ -666,19 +671,24 @@ def chat(body: ChatRequest, request: Request) -> Dict[str, Any]:
             description=(
                 f"User question: {message}"
                 f"{baseline_ctx}"
-                f"{corr_summary}"
                 "\n\nSTEPS:\n"
                 "1. Query the relevant data from daily_metrics (include today, yesterday AND the day before)\n"
                 "2. LAYER 1: State what happened (the surface fact)\n"
                 "3. LAYER 2: Evaluate adjacent variables (training_load, BB drained, stress, prep data)\n"
                 "4. LAYER 3: Investigate mechanics (HRV, sleeping HR, deep sleep, respiration)\n"
                 "5. Follow the timeline: For causal questions ('what caused X'), do not stop at yesterday. Trace the data chronologically backwards to find where the shift originated.\n"
-                "6. Write a conversational empirical answer.\n\n"
+                "6. Write your final answer.\n\n"
+                "MANDATORY OUTPUT FORMAT:\n"
+                "You MUST format your output using these exact headers:\n"
+                "### The Facts (Layer 1)\n"
+                "### Surface Drivers (Layer 2)\n"
+                "### Deep Mechanics (Layer 3)\n"
+                "### Conclusion\n\n"
                 "FORBIDDEN: 'likely due to', 'probably because', 'caused by' without naming the exact metric."
             ),
             expected_output=(
-                "A conversational answer that uses 3-layer diagnostics, cites specific dates/numbers, "
-                "compares to baselines, and flags contradictions."
+                "A diagnostic answer strictly following the 4 mandatory markdown headers, citing specific dates/numbers, "
+                "comparing to baselines, and flagging contradictions."
             ),
         )
 
