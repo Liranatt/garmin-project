@@ -9,7 +9,7 @@ import uuid
 from fastapi import BackgroundTasks
 import logging
 import os
-os.environ["CREWAI_DISABLE_SIGTERM"] = "true"
+os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
 import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
