@@ -14,9 +14,9 @@ from datetime import date, timedelta
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-import api as api_mod
-import routes.helpers as helpers_mod
+# conftest.py handles sys.path — import api as a package so relative imports resolve
+from src import api as api_mod
+from src.routes import helpers as helpers_mod
 
 
 def test_structured_insight_has_required_sections_and_limits():

@@ -3,10 +3,7 @@ Tests for the summary builder module.
 
 Covers: build_concise_summary edge cases and content extraction.
 """
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from pipeline.summary_builder import build_concise_summary
 

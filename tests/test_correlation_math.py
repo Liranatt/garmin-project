@@ -4,17 +4,12 @@ Tests for the correlation engine mathematical computations.
 Covers: _adaptive_alpha, Pearson lag-1, AR(1), Markov transitions,
 anomaly detection, date-gap handling, and bin discretization.
 """
-import sys
-import os
 import math
 from datetime import date
 
 import numpy as np
 import pandas as pd
 import pytest
-
-# Allow importing from src/
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from correlation_engine import (
     _adaptive_alpha,

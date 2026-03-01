@@ -7,14 +7,11 @@ Covers:
 - send_weekly_email HTML assembly
 - send_generic_email guard clauses
 """
-import sys
 import os
 from datetime import date
 from unittest.mock import patch, MagicMock
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from email_notifier import (
     _extract_recommendations_html,

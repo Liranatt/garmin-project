@@ -3,15 +3,11 @@ Tests for the CrewAI agent tools (SQL, correlation, pattern).
 
 All DB calls are mocked — no real Postgres required.
 """
-import sys
-import os
 from unittest.mock import patch, MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 
 # ─── Import the raw functions behind @tool decorators ─────────

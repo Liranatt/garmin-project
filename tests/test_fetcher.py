@@ -3,15 +3,11 @@ Tests for the enhanced Garmin data fetcher.
 
 Covers: deep_vars, _safe_val, _apply_quality_fixes.
 """
-import sys
-import os
 import math
 
 import numpy as np
 import pandas as pd
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from enhanced_fetcher import deep_vars, _safe_val, EnhancedGarminDataFetcher
 

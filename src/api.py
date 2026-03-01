@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from routes.helpers import (
+from .routes.helpers import (
     _conn_str, _fetch_all, _fetch_one, _first_existing,
     _num, _text, _pick_row_value,
     _build_snapshot_payload, _build_history_rows,
@@ -31,7 +31,7 @@ from routes.helpers import (
 )
 
 try:
-    from pipeline.migrations import schema_audit
+    from .pipeline.migrations import schema_audit
 except ImportError:
     schema_audit = None
 
@@ -609,7 +609,7 @@ def run_chat_agent_background(job_id: str, message: str):
         # ── Part 2: Upgraded Simple Agent ──
         if not answer:
             try:
-                from routes.helpers import _fetch_one
+                from .routes.helpers import _fetch_one
                 baselines = _fetch_one("""
                     SELECT 
                         ROUND(AVG(sleep_score)::numeric, 1) AS avg_sleep,

@@ -90,8 +90,10 @@ class WeeklySyncPipeline:
                 )
                 pipeline_status["insights_ok"] = True
 
-                log.info("Step 5/5: Sending email notification...")
-                pipeline_status["email_ok"] = self._send_email(insights)
+                # Email disabled — was sending weekly insights on every daily run.
+                # TODO: re-enable when moved to a true weekly-only schedule.
+                log.info("Step 5/5: Email notification SKIPPED (disabled)")
+                pipeline_status["email_ok"] = True
             else:
                 insights = "(AI analysis skipped)"
                 log.info("Step 3-5/5: SKIPPED (--fetch mode)")
