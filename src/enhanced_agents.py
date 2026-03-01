@@ -14,12 +14,12 @@ import logging
 from datetime import date, timedelta
 from typing import Any, List
 from dotenv import load_dotenv
+from src.db_utils import get_conn_str as _get_conn_str
 
 load_dotenv()
 
 log = logging.getLogger("enhanced_agents")
 
-# ג”€ג”€ Gemini LLM for all agents (lazyג€‘init to avoid import-time crashes) ג”€ג”€
 _gemini_llm = None
 
 def _get_llm() -> LLM:
@@ -31,19 +31,6 @@ def _get_llm() -> LLM:
             temperature=0.3,
         )
     return _gemini_llm
-
-
-def _get_conn_str() -> str:
-    """Return PostgreSQL connection string.
-
-    Checks POSTGRES_CONNECTION_STRING first, falls back to DATABASE_URL
-    (Heroku standard).  Normalises postgres:// to postgresql:// for psycopg2.
-    """
-    url = os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    return url
-
 
 # ג”€ג”€ Standalone tools (CrewAI 1.9+ uses module-level functions) ג”€ג”€
 
@@ -742,6 +729,14 @@ class AdvancedHealthAgents:
             "      fits. Always check ALL available metrics before concluding.\n"
             "      A single supporting metric is not enough -- look for\n"
             "      convergent evidence across multiple metrics.\n"
+            "15. PARTIAL-DAY DATA: Today's row is synced at ~06:00 UTC and\n"
+            "    contains ONLY morning values. Metrics like bb_drained,\n"
+            "    total_steps, active_calories, stress_avg, and active_minutes\n"
+            "    accumulate throughout the day and will be near-zero or\n"
+            "    artificially low at sync time. When analyzing today's data,\n"
+            "    explicitly note it is PARTIAL. Focus primary analysis on\n"
+            "    completed days (yesterday and earlier). Never interpret today's\n"
+            "    low accumulative metrics as 'rest day' or 'inactivity'.\n"
             "==============================================\n"
         )
 

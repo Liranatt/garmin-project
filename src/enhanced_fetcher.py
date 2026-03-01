@@ -45,16 +45,8 @@ log = logging.getLogger("enhanced_fetcher")
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 
-# Exercise categories for body-part detection (from Garmin exercise-sets API)
-UPPER_BODY_CATS = {
-    "PULL_UP", "ROW", "SHOULDER_PRESS", "BENCH_PRESS", "CURL",
-    "LATERAL_RAISE", "TRICEPS_EXTENSION", "CHEST_FLY", "PUSHUP",
-    "DIP", "DEADLIFT", "T_BAR_ROW",
-}
-LOWER_BODY_CATS = {
-    "SQUAT", "LUNGE", "LEG_PRESS", "LEG_CURL", "LEG_EXTENSION",
-    "CALF_RAISE", "HIP", "GLUTE",
-}
+# Exercise categories for body-part detection (shared — see src/constants.py)
+from src.constants import UPPER_BODY_CATS, LOWER_BODY_CATS
 
 # Columns in the daily_metrics table
 DAILY_COLS = [

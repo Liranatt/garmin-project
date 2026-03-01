@@ -1,6 +1,6 @@
 # Frontend Integration Contract (gps_presentation)
 
-Last verified: 2026-02-20
+Last verified: 2026-03-01
 
 ## Source of Truth
 
@@ -17,14 +17,14 @@ Last verified: 2026-02-20
 
 ## Required Endpoints
 
-1. `GET /health-check`
+### 1. `GET /health-check`
 - Purpose: status badge ("Online"/"Waking up"/"Offline").
 - Frontend reads one of:
   - `status`
   - `message`
 - If response text includes `wake|boot|starting`, UI shows "Waking up".
 
-2. `GET /api/v1/snapshot/latest`
+### 2. `GET /api/v1/snapshot/latest`
 - Purpose: hero KPIs + snapshot cards.
 - Frontend accepts:
   - object with `snapshot` key, or
@@ -39,7 +39,7 @@ Last verified: 2026-02-20
   - load: `training_load | load | acute_load | seven_day_load`
   - timestamp: `timestamp | created_at | date | as_of`
 
-3. `GET /api/v1/metrics/history?days=<int>`
+### 3. `GET /api/v1/metrics/history?days=<int>`
 - Purpose: trends + correlation matrix (correlations computed on frontend).
 - Frontend accepts:
   - array directly, or
@@ -57,7 +57,7 @@ Last verified: 2026-02-20
   - frontend filters out rows before `2026-02-01`.
   - frontend sorts by date ascending.
 
-4. `GET /api/v1/workouts/progress?days=<int>`
+### 4. `GET /api/v1/workouts/progress?days=<int>`
 - Purpose: workout progress tab (cards + table).
 - Frontend accepts:
   - array directly, or
@@ -76,7 +76,14 @@ Last verified: 2026-02-20
   - cadence: `avg_cadence | avgCadence | cadence`
   - load: `training_load | trainingLoad`
 
-5. `GET /api/v1/insights/latest`
+### 5. `GET /api/v1/analytics/cross-effects`
+- Purpose: cross-metric correlation analysis from the statistical engine.
+- Frontend accepts:
+  - object with analysis results, or
+  - `{ data: {...} }`.
+- Returns pre-computed cross-metric relationships from `CorrelationEngine`.
+
+### 6. `GET /api/v1/insights/latest`
 - Purpose: main insight + additional agent cards.
 - Frontend accepts:
   - array directly, or
@@ -89,12 +96,54 @@ Last verified: 2026-02-20
   - timestamp: `timestamp | created_at | date | time`
   - detail: `detail | text | content | raw`
 
-6. `POST /api/v1/chat`
+### 7. `POST /api/v1/chat` (Async — Job Polling)
 - Request JSON:
   - `{ "message": "<string>" }`
-- Frontend expects response field in priority:
-  - `answer | response | message | text | output`
-- Any non-2xx returns error text to UI.
+- **Response (immediate):**
+  - `{ "job_id": "<uuid>" }`
+  - HTTP 200 returned immediately; agent runs in background.
+- Frontend then polls:
+
+### 8. `GET /api/v1/chat/status/{job_id}`
+- Purpose: poll for chat result.
+- Response schema:
+  ```json
+  {
+    "status": "running" | "done" | "error",
+    "answer": "..." 
+  }
+  ```
+  - `status: "running"` → agent still processing, poll again in 3 seconds.
+  - `status: "done"` → `answer` contains the full AI response.
+  - `status: "error"` → `answer` contains the error message.
+- Frontend polls every 3 seconds until `status` is not `"running"`.
+
+### 9. `GET /api/v1/admin/migration-audit`
+- Purpose: database schema migration status check.
+- Returns audit of table schemas vs expected schemas.
+- Not consumed by frontend UI — used for admin diagnostics.
+
+## Chat Flow (Frontend Implementation)
+
+```javascript
+// 1. Send question
+const { job_id } = await fetch(BASE + "/api/v1/chat", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ message: userQuestion })
+}).then(r => r.json());
+
+// 2. Poll for result
+let result;
+do {
+  await new Promise(r => setTimeout(r, 3000));
+  result = await fetch(BASE + `/api/v1/chat/status/${job_id}`).then(r => r.json());
+} while (result.status === "running");
+
+// 3. Display
+if (result.status === "done") showAnswer(result.answer);
+else showError(result.answer);
+```
 
 ## CORS Requirements
 
@@ -106,11 +155,6 @@ Backend must allow:
 - Headers: at minimum `content-type` for chat preflight
 
 Observed live backend already returns correct CORS headers for these checks.
-
-## Current Integration Gap (Observed)
-
-- `GET /api/v1/workouts/progress?days=30` returns `404 Not Found` on live backend.
-- This breaks the Workout Progress tab and forces error state in UI.
 
 ## Cross-Repo Change Rule
 

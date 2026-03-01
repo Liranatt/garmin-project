@@ -634,6 +634,14 @@ def run_chat_agent_background(job_id: str, message: str):
                     f"RHR={baselines.get('avg_rhr')}bpm, "
                     f"steps={baselines.get('avg_steps')}, "
                     f"BB_charged={baselines.get('avg_bb_charged')}"
+                    "\n\n⚠️ PARTIAL-DAY DATA: Today's row is synced at ~06:00 UTC "
+                    "and contains only morning values. Metrics like bb_drained, "
+                    "total_steps, active_calories, stress_avg, and active_minutes "
+                    "accumulate throughout the day and will be near-zero or "
+                    "artificially low. When analyzing today's data, explicitly "
+                    "note it is partial. Focus primary analysis on completed days "
+                    "(yesterday and earlier). Never interpret today's low "
+                    "accumulative metrics as 'rest day' or 'inactivity'."
                 )
             except Exception:
                 baseline_ctx = ""

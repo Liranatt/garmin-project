@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 import psycopg2
 from dotenv import load_dotenv
 from psycopg2.extras import RealDictCursor
+from src.db_utils import get_conn_str as _conn_str
 
 load_dotenv()
 
@@ -24,18 +25,6 @@ log = logging.getLogger("api")
 
 
 # ─── DB helpers ─────────────────────────────────────────────
-
-def _normalize_db_url(value: str) -> str:
-    db_url = (value or "").strip()
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    return db_url
-
-
-def _conn_str() -> str:
-    return _normalize_db_url(
-        os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
-    )
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -139,7 +128,11 @@ def _clip_text(text: str, max_len: int = 280) -> str:
 # ─── Insight structuring ───────────────────────────────────
 
 def _structured_insight(text: str) -> Dict[str, Any]:
-    """Enforce short, human-readable insight schema for UI cards."""
+    """Enforce short, human-readable insight schema for UI cards.
+
+    See also: src/pipeline/summary_builder.py :: build_concise_summary()
+    for the plain-text 3-bullet variant used by the pipeline.
+    """
     cleaned = _text(text)
     if not cleaned:
         empty = "Insufficient data to generate this section yet."

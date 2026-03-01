@@ -569,6 +569,146 @@ After the agents finish their analysis and the Synthesizer produces structured r
 
 ---
 
+### 8. Live Chat Architecture (Async Agent Pipeline)
+
+The web dashboard provides a **natural-language chat** interface where users can ask free-form health questions. The request flows through an async pipeline designed for Heroku's request-timeout limits (30 seconds) and low-cost LLM budgets.
+
+#### Request Flow
+
+```
+Frontend (GitHub Pages)
+   │
+   ├──POST /api/v1/chat {"message": "..."}
+   │        │
+   │        └──▶ FastAPI receives, generates job_id
+   │              launches BackgroundTask(run_chat_agent_background)
+   │              returns {"job_id": "abc123"} immediately (<1s)
+   │
+   ├──GET /api/v1/chat/status/abc123  (poll every 3s)
+   │        └──▶ Returns {"status": "running"} until agent finishes
+   │
+   └──GET /api/v1/chat/status/abc123  (final poll)
+            └──▶ Returns {"status": "done", "answer": "..."}
+```
+
+**Why async?** Agent reasoning with Gemini 2.5 Flash takes 10–45 seconds. A synchronous endpoint would either timeout on Heroku or block the frontend. The job-polling pattern decouples request from response.
+
+#### Complexity Routing (`api.py`, line 566)
+
+The system classifies incoming questions into **complex** vs. **simple** using keyword matching:
+
+```python
+COMPLEX_KEYWORDS = ["correlat", "relationship", "compare", "versus", "trend",
+                    "pattern", "weekly", "monthly", "progress"]
+```
+
+- **Complex** → Full multi-agent crew (5 agents, sequential pipeline, ~30–45s)
+- **Simple** → Single upgraded agent with contextual backstory (~10–20s)
+- **Fallback** → If both fail, `_fallback_chat()` generates a deterministic DB-only answer
+
+#### Context Injection via `.ctx` Property
+
+The single-agent path needs the same analytical rules that the multi-agent crew uses, but without the overhead of initializing 5 agents and a full `CorrelationEngine` run. The `.ctx` property (`enhanced_agents.py`, line 548) exposes a cached `_rules_ctx` string containing:
+
+1. **14 analytical rules** (sample size, outlier checks, variance ≠ trend, etc.)
+2. **Physiological investigation guide** (HRV circadian patterns, body battery mechanics, stress interpretation)
+3. **DB column reference** (every column in `daily_metrics` and `activities` with type and unit)
+
+This context is injected into the single agent's backstory, giving it the same guardrails as the full crew without 5× the API cost.
+
+#### Baseline Context (30-Day SQL Averages)
+
+Before constructing the agent, the system queries a 30-day average of key metrics (`api.py`, lines 614–632):
+
+```sql
+SELECT AVG(sleep_score), AVG(body_battery_morning), AVG(hrv_last_night),
+       AVG(resting_hr), AVG(stress_avg), AVG(training_readiness)
+FROM daily_metrics WHERE date >= CURRENT_DATE - 30
+```
+
+These averages are prepended to the agent prompt as `baseline_ctx`, giving the LLM concrete numbers to anchor its reasoning rather than hallucinating plausible-sounding baselines.
+
+---
+
+### 9. Production Hardening
+
+Several critical fixes were discovered through empirical testing on the live Heroku deployment — issues that passed all 109 unit tests but failed in production.
+
+#### Database Connection Fallback (`_get_conn_str`)
+
+Heroku provisions PostgreSQL via `DATABASE_URL`, but the original code only checked `POSTGRES_CONNECTION_STRING`. Additionally, Heroku's URL uses the legacy `postgres://` scheme, which psycopg2 rejects.
+
+**Fix** (`enhanced_agents.py`, lines 39–48):
+```python
+def _get_conn_str() -> str:
+    url = os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return url
+```
+
+An alias is also set at API startup (`api.py`, lines 13–15) to ensure both env vars exist:
+```python
+if os.getenv("DATABASE_URL") and not os.getenv("POSTGRES_CONNECTION_STRING"):
+    os.environ["POSTGRES_CONNECTION_STRING"] = os.environ["DATABASE_URL"]
+```
+
+#### CrewAI Task Agent Assignment
+
+CrewAI's `Task()` constructor requires an explicit `agent=` parameter. The simple-agent path was missing this, causing a silent `"Agent is missing in the task"` error that fell through to the generic fallback response. Discovered by replacing `except: pass` with `log.exception()` and reading Heroku logs.
+
+**Fix:** Added `agent=agent` to the `Task()` constructor in `run_chat_agent_background()`.
+
+#### Exception Logging
+
+The original code had two `except: pass` blocks in the chat flow — silently swallowing all errors. Both were replaced with `log.exception(...)` to ensure production failures are visible in Heroku logs.
+
+---
+
+### 10. Empirical Validation (10-Question Battery)
+
+After all production fixes were deployed, a systematic test of 10 diverse questions was run against the live endpoint. These questions were chosen to exercise different agent capabilities:
+
+| # | Question | Result |
+|---|---|---|
+| 1 | "What's my current health status based on today's data?" | ✅ Real AI response |
+| 2 | "How has my sleep quality trended over the past week?" | ✅ Real AI response |
+| 3 | "What's the correlation between my stress levels and sleep?" | ✅ Real AI response |
+| 4 | "Based on my recent data, what should I focus on improving?" | ✅ Real AI response |
+| 5 | "How does my HRV relate to my training readiness?" | ✅ Real AI response |
+| 6 | "What patterns do you see in my body battery data?" | ✅ Real AI response |
+| 7 | "Compare my weekday vs weekend recovery patterns" | ✅ Real AI response |
+| 8 | "What's affecting my training readiness the most?" | ✅ Real AI response |
+| 9 | "Give me a detailed analysis of my last 30 days" | ✅ Real AI response |
+| 10 | "Top 5 strongest correlations with r, n, confidence" | ✅ Real AI response |
+
+**Result:** 10/10 questions returned real AI-generated responses (not fallback). Overall grade: **B+** — responses are data-grounded and coherent, occasionally too generic on the low-cost Gemini 2.5 Flash model.
+
+**Issue discovered:** Question #1 misinterpreted partial-day data — `bb_drained=0` was called a "rest day" when it was actually a morning sync with incomplete accumulative metrics. This led to the **Partial-Day Data Guardrail** (see Section 11 below).
+
+---
+
+### 11. Partial-Day Data Guardrail
+
+#### The Problem
+
+The daily sync runs at 06:00 UTC. Today's database row contains only the morning snapshot — metrics like `bb_drained`, `total_steps`, `active_calories`, `stress_avg`, and `active_minutes` accumulate throughout the day and are near-zero at sync time. When an agent reads `bb_drained=0`, it may conclude "you had a rest day" — which is factually wrong. The day simply hasn't happened yet.
+
+#### The Fix
+
+A partial-day warning is injected into **both** agent paths:
+
+1. **Simple agent path** (`api.py`, `baseline_ctx`): A paragraph appended to the 30-day baseline context warns the agent about today's incomplete row.
+2. **Multi-agent path** (`enhanced_agents.py`, `analysis_rules`): An additional rule (Rule 15) is added to the 14-rule analytical framework.
+
+The warning text:
+
+> ⚠️ PARTIAL-DAY DATA: Today's row is synced at ~06:00 UTC and contains only morning values. Metrics like `bb_drained`, `total_steps`, `active_calories`, `stress_avg`, and `active_minutes` accumulate throughout the day and will be near-zero or artificially low. When analyzing today's data, explicitly note it is partial. Focus primary analysis on completed days (yesterday and earlier). Never interpret today's low accumulative metrics as "rest day" or "inactivity."
+
+This is a deterministic text injection — not a model behavior change. The agent sees the warning in its context window alongside the analytical rules and physiological guide.
+
+---
+
 ## References
 
 | Source | Used for | Where in code |

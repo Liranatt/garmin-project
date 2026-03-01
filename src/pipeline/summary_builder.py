@@ -4,7 +4,11 @@ from __future__ import annotations
 
 
 def build_concise_summary(insights: str) -> str:
-    """Create a strict 3-bullet, human-friendly summary for UI cards."""
+    """Create a strict 3-bullet, human-friendly summary for UI cards.
+
+    See also: src/routes/helpers.py :: _structured_insight() for the
+    dict-based variant used by the REST API.
+    """
     text = str(insights or "").replace("\r", "").strip()
     if not text:
         return (
