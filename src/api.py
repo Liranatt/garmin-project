@@ -10,6 +10,9 @@ from fastapi import BackgroundTasks
 import logging
 import os
 os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
+# Heroku provides DATABASE_URL; agent tools use POSTGRES_CONNECTION_STRING
+if not os.getenv("POSTGRES_CONNECTION_STRING") and os.getenv("DATABASE_URL"):
+    os.environ["POSTGRES_CONNECTION_STRING"] = os.getenv("DATABASE_URL")
 import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional

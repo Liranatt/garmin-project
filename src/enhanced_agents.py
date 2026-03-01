@@ -33,6 +33,18 @@ def _get_llm() -> LLM:
     return _gemini_llm
 
 
+def _get_conn_str() -> str:
+    """Return PostgreSQL connection string.
+
+    Checks POSTGRES_CONNECTION_STRING first, falls back to DATABASE_URL
+    (Heroku standard).  Normalises postgres:// to postgresql:// for psycopg2.
+    """
+    url = os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL") or ""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return url
+
+
 # ג”€ג”€ Standalone tools (CrewAI 1.9+ uses module-level functions) ג”€ג”€
 
 @tool("Run SQL Query")
@@ -60,7 +72,7 @@ def run_sql_query(query: str) -> str:
         if keyword in query_upper:
             return f"Error: {keyword} operations are not allowed. This tool is read-only."
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         df = pd.read_sql_query(query, conn)
         conn.close()
         if df.empty:
@@ -78,7 +90,7 @@ def calculate_correlation(metric1: str, metric2: str, days: int = 30) -> str:
     Returns correlation coefficient and interpretation.
     """
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         query = f"""
             SELECT {metric1}, {metric2}
             FROM daily_metrics
@@ -111,7 +123,7 @@ def find_best_days(metric: str, top_n: int = 5) -> str:
     Example: find_best_days("training_readiness", 5)
     """
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         query = f"""
             SELECT date, {metric}
             FROM daily_metrics
@@ -133,7 +145,7 @@ def analyze_pattern(metric: str, days: int = 30) -> str:
     Example: analyze_pattern("stress_level", 30)
     """
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         query = f"""
             SELECT date, {metric}
             FROM daily_metrics
@@ -171,7 +183,7 @@ def get_past_recommendations(weeks: int = 4) -> str:
     """
     weeks = max(1, int(weeks))
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         _ensure_agent_recommendations_table(conn)
         with conn.cursor() as cur:
             cur.execute(
@@ -230,7 +242,7 @@ def save_recommendations_to_db(recommendations: list, week_date=None):
         week_date = today - timedelta(days=today.weekday())
 
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         conn.autocommit = True
         _ensure_agent_recommendations_table(conn)
         cur = conn.cursor()
@@ -263,7 +275,7 @@ def load_past_recommendations_context(weeks: int = 4) -> str:
     """
     weeks = max(1, int(weeks))
     try:
-        conn = psycopg2.connect(os.getenv('POSTGRES_CONNECTION_STRING'))
+        conn = psycopg2.connect(_get_conn_str())
         _ensure_agent_recommendations_table(conn)
         with conn.cursor() as cur:
             cur.execute(
@@ -531,6 +543,13 @@ class AdvancedHealthAgents:
         self.lifestyle_analyst = self.sleep_lifestyle
         self.sleep_analyst = self.sleep_lifestyle
         self.weakness_identifier = self.synthesizer
+
+    @property
+    def ctx(self) -> str:
+        """Combined analytical rules + physiological guide + DB schema."""
+        if not hasattr(self, '_rules_ctx'):
+            self.create_weekly_summary_tasks()  # triggers _rules_ctx caching
+        return self._rules_ctx
 
     def create_deep_analysis_tasks(self, analysis_period: int = 30) -> List[Task]:
         """Create comprehensive analysis tasks (4 agents)"""
@@ -858,6 +877,7 @@ class AdvancedHealthAgents:
         )
 
         ctx = f"{corr_block}{analysis_rules}{physio_rules}{db_hint}"
+        self._rules_ctx = f"{analysis_rules}{physio_rules}{db_hint}"
 
 
         return [
