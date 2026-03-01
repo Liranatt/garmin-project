@@ -15,7 +15,7 @@ Instead of relying on generic algorithms, this system uses custom-built mathemat
 
 ## 📸 Live Dashboard
 
-The frontend is a static site hosted on **GitHub Pages** at [`gps_presentation_repo/garmin/index.html`](gps_presentation_repo/garmin/index.html). It communicates with the Heroku backend via REST API calls.
+The frontend is a static site hosted on **GitHub Pages** at [`gps_presentation_repo/garmin/index.html`](https://liranattar.dev/garmin/). It communicates with the Heroku backend via REST API calls.
 
 ![Agent Chat](docs/screenshots/agent_chat.png)
 *Chatting with the AI agents to get data-backed answers to health questions.*
