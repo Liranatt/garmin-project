@@ -606,8 +606,8 @@ def run_chat_agent_background(job_id: str, message: str):
                     if idx < len(agents) - 1:
                         time.sleep(1) # הורדנו את ההמתנה הארוכה כי אנחנו ברקע!
                         
-            except Exception:
-                pass # יפול לסוכן הפשוט
+            except Exception as e:
+                log.exception("Complex agent flow failed, falling back to simple agent: %s", e)
 
         # ── Part 2: Upgraded Simple Agent ──
         if not answer:
@@ -662,6 +662,7 @@ def run_chat_agent_background(job_id: str, message: str):
             )
 
             task = Task(
+                agent=agent,
                 description=(
                     f"User question: {message}"
                     f"{baseline_ctx}"
@@ -702,6 +703,7 @@ def run_chat_agent_background(job_id: str, message: str):
         }
 
     except Exception as e:
+        log.exception("run_chat_agent_background failed: %s", e)
         # במקרה של קריסה מלאה, נשתמש בסוכן הגיבוי ונשמור את תשובתו
         fallback = _fallback_chat(message)
         active_chat_jobs[job_id] = {
