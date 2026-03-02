@@ -14,7 +14,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from email_notifier import send_generic_email, load_dotenv
+try:
+    from .email_notifier import send_generic_email, load_dotenv
+except ImportError:
+    from email_notifier import send_generic_email, load_dotenv
 
 load_dotenv()
 

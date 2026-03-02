@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import psycopg2
 from dotenv import load_dotenv
 from psycopg2.extras import RealDictCursor
-from db_utils import get_conn_str as _conn_str
+from ..db_utils import get_conn_str as _conn_str
 
 load_dotenv()
 

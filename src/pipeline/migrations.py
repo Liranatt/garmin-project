@@ -9,7 +9,10 @@ from typing import Any, Dict, List
 import psycopg2
 from dotenv import load_dotenv
 
-from enhanced_schema import upgrade_database
+try:
+    from ..enhanced_schema import upgrade_database
+except ImportError:
+    from enhanced_schema import upgrade_database
 
 log = logging.getLogger("pipeline.migrations")
 

@@ -151,7 +151,10 @@ BENCHMARK_PERIODS = [
 ]
 
 # Exercise categories for body-part detection (shared — see constants.py)
-from constants import UPPER_BODY_CATS, LOWER_BODY_CATS  # noqa: E402
+try:
+    from .constants import UPPER_BODY_CATS, LOWER_BODY_CATS  # noqa: E402
+except ImportError:
+    from constants import UPPER_BODY_CATS, LOWER_BODY_CATS  # noqa: E402
 
 
 # ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•ג•

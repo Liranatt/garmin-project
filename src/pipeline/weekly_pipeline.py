@@ -11,12 +11,20 @@ from typing import Any, Dict, Optional
 
 import psycopg2
 
-from correlation_engine import CorrelationEngine
-from email_notifier import send_weekly_email
-from enhanced_agents import AdvancedHealthAgents
-from enhanced_fetcher import EnhancedGarminDataFetcher
-from pipeline.migrations import ensure_startup_schema
-from pipeline.summary_builder import build_concise_summary
+try:
+    from ..correlation_engine import CorrelationEngine
+    from ..email_notifier import send_weekly_email
+    from ..enhanced_agents import AdvancedHealthAgents
+    from ..enhanced_fetcher import EnhancedGarminDataFetcher
+    from .migrations import ensure_startup_schema
+    from .summary_builder import build_concise_summary
+except ImportError:
+    from correlation_engine import CorrelationEngine
+    from email_notifier import send_weekly_email
+    from enhanced_agents import AdvancedHealthAgents
+    from enhanced_fetcher import EnhancedGarminDataFetcher
+    from pipeline.migrations import ensure_startup_schema
+    from pipeline.summary_builder import build_concise_summary
 
 log = logging.getLogger("weekly_sync")
 

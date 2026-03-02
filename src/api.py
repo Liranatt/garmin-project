@@ -550,11 +550,11 @@ def run_chat_agent_background(job_id: str, message: str):
     try:
         from crewai import Agent, Crew, Process, Task
         try:
-            from enhanced_agents import (
+            from .enhanced_agents import (
                 _get_llm, analyze_pattern, calculate_correlation,
                 find_best_days, run_sql_query, AdvancedHealthAgents
             )
-        except Exception:
+        except ImportError:
             from enhanced_agents import (
                 _get_llm, analyze_pattern, calculate_correlation,
                 find_best_days, run_sql_query, AdvancedHealthAgents
