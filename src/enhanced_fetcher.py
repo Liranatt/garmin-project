@@ -45,8 +45,8 @@ log = logging.getLogger("enhanced_fetcher")
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 
-# Exercise categories for body-part detection (shared — see src/constants.py)
-from src.constants import UPPER_BODY_CATS, LOWER_BODY_CATS
+# Exercise categories for body-part detection (shared — see constants.py)
+from constants import UPPER_BODY_CATS, LOWER_BODY_CATS
 
 # Columns in the daily_metrics table
 DAILY_COLS = [
