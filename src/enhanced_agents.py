@@ -14,7 +14,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any, List
 from dotenv import load_dotenv
-from src.db_utils import get_conn_str as _get_conn_str
+from db_utils import get_conn_str as _get_conn_str
 
 load_dotenv()
 
