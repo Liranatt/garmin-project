@@ -16,6 +16,9 @@ if not os.getenv("POSTGRES_CONNECTION_STRING") and os.getenv("DATABASE_URL"):
 import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+
+import psycopg2.pool
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,9 +54,41 @@ except ImportError:
 log = logging.getLogger("api")
 
 
+# ─── DB connection pool lifecycle ──────────────────────────
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    """Startup: create DB pool.  Shutdown: close it."""
+    # ── startup ──
+    try:
+        from .routes import helpers as _h
+        cs = _conn_str()
+        if not cs:
+            log.warning("No DB connection string – pool not created")
+        else:
+            minconn = int(os.getenv("DB_POOL_MIN", "1"))
+            maxconn = int(os.getenv("DB_POOL_MAX", "10"))
+            _h._DB_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, cs)
+            log.info("DB pool ready  (min=%s, max=%s)", minconn, maxconn)
+    except Exception:
+        log.exception("DB pool init failed – falling back to per-request connect")
+
+    yield  # application runs here
+
+    # ── shutdown ──
+    try:
+        from .routes import helpers as _h
+        pool = getattr(_h, "_DB_POOL", None)
+        if pool and not pool.closed:
+            pool.closeall()
+            log.info("DB pool closed")
+    except Exception:
+        pass
+
+
 # ─── App setup ─────────────────────────────────────────────
 
-app = FastAPI(title="Garmin Health API", version="1.0.0")
+app = FastAPI(title="Garmin Health API", version="1.0.0", lifespan=_lifespan)
 
 if _HAS_SLOWAPI and _limiter:
     app.state.limiter = _limiter

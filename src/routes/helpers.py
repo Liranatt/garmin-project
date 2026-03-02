@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 import psycopg2
+import psycopg2.pool
 from dotenv import load_dotenv
 from psycopg2.extras import RealDictCursor
 from ..db_utils import get_conn_str as _conn_str
@@ -22,6 +23,10 @@ from ..db_utils import get_conn_str as _conn_str
 load_dotenv()
 
 log = logging.getLogger("api")
+
+# Connection pool – initialised at app startup by src.api._init_db_pool().
+# Falls back to per-request psycopg2.connect() when None (tests, workers).
+_DB_POOL: psycopg2.pool.ThreadedConnectionPool | None = None
 
 
 # ─── DB helpers ─────────────────────────────────────────────
@@ -35,19 +40,37 @@ def _to_jsonable(value: Any) -> Any:
     return value
 
 
+def _run_query(conn, query, params):
+    """Execute *query* on an open connection and return jsonable rows."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(query, params or ())
+        rows = cur.fetchall()
+        return [{k: _to_jsonable(v) for k, v in dict(row).items()} for row in rows]
+
+
 def _fetch_all(query: str, params: Optional[tuple] = None) -> List[Dict[str, Any]]:
+    # ── Pooled path (web dyno) ──
+    pool = _DB_POOL
+    if pool and not pool.closed:
+        conn = pool.getconn()
+        try:
+            return _run_query(conn, query, params)
+        finally:
+            try:
+                pool.putconn(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    # ── Fallback: direct connect (workers, tests, pool not yet ready) ──
     cs = _conn_str()
     if not cs:
         raise RuntimeError("POSTGRES_CONNECTION_STRING is not set")
     conn = psycopg2.connect(cs)
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, params or ())
-            rows = cur.fetchall()
-            out: List[Dict[str, Any]] = []
-            for row in rows:
-                out.append({k: _to_jsonable(v) for k, v in dict(row).items()})
-            return out
+        return _run_query(conn, query, params)
     finally:
         conn.close()
 
