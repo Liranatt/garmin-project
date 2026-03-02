@@ -11,6 +11,33 @@ from src.enhanced_agents import (
     get_past_recommendations,
 )
 
+
+def _resolve_tool(obj):
+    """Resolve a crewai.tool-wrapped object to a plain callable.
+    The decorator may return a Tool-like object which isn't directly
+    callable; prefer __wrapped__ or .func, else fall back to .run.
+    """
+    if callable(obj):
+        return obj
+    # common wrapped attribute
+    for attr in ("__wrapped__", "func", "f"):
+        if hasattr(obj, attr):
+            cand = getattr(obj, attr)
+            if callable(cand):
+                return cand
+    # crewai Tool may expose a .run method
+    if hasattr(obj, "run") and callable(getattr(obj, "run")):
+        return lambda *a, **k: obj.run(*a, **k)
+    raise TypeError(f"Cannot resolve callable from tool object: {type(obj)}")
+
+
+# Resolve wrapped tools to callables for testing
+run_sql_query = _resolve_tool(run_sql_query)
+calculate_correlation = _resolve_tool(calculate_correlation)
+find_best_days = _resolve_tool(find_best_days)
+analyze_pattern = _resolve_tool(analyze_pattern)
+get_past_recommendations = _resolve_tool(get_past_recommendations)
+
 queries = [
     ("run_sql_query", "SELECT date, resting_hr FROM daily_metrics ORDER BY date DESC LIMIT 5"),
     ("run_sql_query", "SELECT date, resting_hr FROM daily_metrics WHERE date > CURRENT_DATE ORDER BY date DESC LIMIT 5"),
