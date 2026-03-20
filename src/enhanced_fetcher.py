@@ -251,8 +251,7 @@ class EnhancedGarminDataFetcher:
         except Exception as e:
             log.warning("Could not restore garth session from DB: %s", e)
 
-
-    def _presist_session_to_db(self) -> None:
+    def _persist_session_to_db(self) -> None:
         token_path = Path(self.session_dir) / "oauth2_token.json"
         if not token_path.exists():
             log.warning("No oauth2_token.json found to persist")
