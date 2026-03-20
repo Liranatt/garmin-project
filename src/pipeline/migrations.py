@@ -52,6 +52,16 @@ def ensure_startup_schema(conn_str: str | None = None) -> None:
                 ON agent_recommendations(week_date DESC)
                 """
             )
+
+            cur.execute("""
+                        CREATE TABLE IF NOT EXISTS app_config
+                        (
+                            key        TEXT PRIMARY KEY,
+                            value      TEXT NOT NULL,
+                            updated_at TIMESTAMPTZ DEFAULT NOW()
+                        )
+                        """)
+
     finally:
         conn.close()
 

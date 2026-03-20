@@ -35,6 +35,7 @@ import html
 from email.header import decode_header
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 
@@ -231,10 +232,56 @@ class EnhancedGarminDataFetcher:
         
         return None
 
+    def _restore_session_from_db(self):
+        if not self.conn_str:
+            return
+        try:
+            conn = psycopg2.connect(self.conn_str, sslmode="require")
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM app_config WHERE key = 'garth_ouath2_token'")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                Path(self.session_dir).mkdir(parents=True, exist_ok=True)
+                (Path(self.session_dir) / "oauth2_token.json").write_text(row[0])
+                log.info("✅ Garth session restored from DB")
+            else:
+                log.info("⚠️ No garth session in DB — will attempt fresh login")
+        except Exception as e:
+            log.warning("Could not restore garth session from DB: %s", e)
+
+
+    def _presist_session_to_db(self) -> None:
+        token_path = Path(self.session_dir) / "oauth2_token.json"
+        if not token_path.exists():
+            log.warning("No oauth2_token.json found to persist")
+            return
+        try:
+            token_data = token_path.read_text()
+            conn = psycopg2.connect(self.conn_str, sslmode="require")
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("""
+                        INSERT INTO app_config (key, value, updated_at)
+                        VALUES ('garth_oauth2_token', %s, NOW())
+                        ON CONFLICT (key) DO UPDATE
+                            SET value      = EXCLUDED.value,
+                                updated_at = NOW()
+                        """, (token_data,))
+            cur.close()
+            conn.close()
+            log.info("💾 Garth session saved to DB")
+
+        except Exception as e:
+            log.warning("Could not persist garth session to DB: %s", e)
+
+
     def authenticate(self) -> bool:
         """Authenticate with Garmin Connect.
         Tries saved session first, falls back to full login + Auto-MFA."""
         # 1. Try resuming
+        self._restore_session_from_db()
         try:
             garth.resume(self.session_dir)
             garth.client.username
@@ -271,6 +318,7 @@ class EnhancedGarminDataFetcher:
             self.authenticated = True
             Path(self.session_dir).mkdir(parents=True, exist_ok=True)
             garth.save(self.session_dir)
+            self._persist_session_to_db()
             log.info("💾 Session saved")
             return True
         except Exception as e:
