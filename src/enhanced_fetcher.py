@@ -392,72 +392,24 @@ class EnhancedGarminDataFetcher:
         """
         return garth.client.connectapi(endpoint)
 
+    def _safe_fetch(self, name: str, endpoint: str) -> Optional[Any]:
+        try:
+            result = self._api_call(endpoint)
+            log.info(" fetched: %s", name)
+            return result
+        except Exception as e:
+            log.warning (" failed: %s - %s", name, e)
+            return None
     def _fetch_all_sources(self, start: date, end: date,
                            days: int) -> Dict[str, Any]:
         """Fetch from all proven Garmin API endpoints."""
         data: Dict[str, Any] = {}
         start_s = str(start)
-
-        # Heart Rate
-        try:
-            hr = self._api_call(
-                f"/usersummary-service/stats/heartRate/daily/{start}/{end}")
-            data["heart_rate"] = pd.json_normalize(hr)
-            log.info(f"   ✅ Heart Rate:           {len(data['heart_rate'])} days")
-        except Exception as e:
-            log.info(f"   ⚠️  Heart Rate: {e}")
-
-        # Body Battery
-        try:
-            bb = self._api_call(
-                f"/wellness-service/wellness/bodyBattery/reports/daily"
-                f"?startDate={start}&endDate={end}")
-            data["body_battery"] = pd.json_normalize(bb)
-            log.info(f"   ✅ Body Battery:         {len(data['body_battery'])} days")
-        except Exception as e:
-            log.info(f"   ⚠️  Body Battery: {e}")
-
-        # Steps
-        try:
-            steps = self._api_call(
-                f"/usersummary-service/stats/steps/daily/{start}/{end}")
-            data["steps_raw"] = pd.json_normalize(steps)
-            log.info(f"   ✅ Steps:                {len(data['steps_raw'])} days")
-        except Exception as e:
-            log.info(f"   ⚠️  Steps: {e}")
-
-        # Training Readiness
-        try:
-            tr = self._api_call(
-                f"/metrics-service/metrics/trainingreadiness/{start}/{end}")
-            data["training_readiness"] = pd.json_normalize(tr)
-            log.info(f"   ✅ Training Readiness:   {len(data['training_readiness'])} entries")
-        except Exception as e:
-            log.info(f"   ⚠️  Training Readiness: {e}")
-
-        # HRV (connectapi — returns dict with hrvSummaries list)
-        try:
-            hrv_raw = self._api_call(
-                f"/hrv-service/hrv/daily/{start}/{end}")
-            hrv_list = (hrv_raw.get("hrvSummaries", [])
-                        if isinstance(hrv_raw, dict) else [])
-            if hrv_list:
-                data["hrv"] = pd.json_normalize(hrv_list)
-                log.info(f"   ✅ HRV:                 {len(data['hrv'])} days")
-            else:
-                log.info("   ⚠️  HRV: 0 summaries")
-        except Exception as e:
-            log.info(f"   ⚠️  HRV: {e}")
-
-        # Stress
-        try:
-            stress = self._api_call(
-                f"/usersummary-service/stats/stress/daily/{start}/{end}")
-            if stress:
-                data["stress"] = pd.json_normalize(stress)
-                log.info(f"   ✅ Stress:               {len(data['stress'])} days")
-        except Exception as e:
-            log.info(f"   ⚠️  Stress: {e}")
+        endpoints = ["heart_rate", "body_battery", "steps", "training_readiness", "hrv, stress", "intensity", "weight", "activities"]
+        for raw in endpoints:
+            raw = self._safe_fetch("heart_rate", f"/usersummary-service/stats/heartRate/daily/{start}/{end}")
+            if raw is not None:
+                data["heart_rate"] = pd.json_normalize(raw)
 
         # Sleep (per day — most reliable, has sleepScores)
         try:
@@ -506,54 +458,7 @@ class EnhancedGarminDataFetcher:
         except Exception as e:
             log.info(f"   ⚠️  Sleep: {e}")
 
-        # Intensity Minutes (garth typed objects + vars)
-        try:
-            im_items = garth.DailyIntensityMinutes.list(start_s, days)
-            if im_items:
-                rows = [deep_vars(obj) for obj in im_items]
-                data["intensity"] = pd.json_normalize([r for r in rows if r])
-                log.info(f"   ✅ Intensity Minutes:    {len(data['intensity'])} days")
-        except Exception as e:
-            log.info(f"   ⚠️  Intensity: {e}")
 
-        # Weight (garth typed objects + vars)
-        try:
-            w_items = garth.WeightData.list(start_s, days)
-            if w_items:
-                rows = [deep_vars(obj) for obj in w_items]
-                data["weight"] = pd.json_normalize([r for r in rows if r])
-                log.info(f"   ✅ Weight:               {len(data['weight'])} entries")
-        except Exception as e:
-            log.info(f"   ⚠️  Weight: {e}")
-
-        # Activities (garth typed objects)
-        try:
-            acts = garth.Activity.list(limit=50, start=0)
-            act_rows = []
-            for a in acts:
-                row = {}
-                for k, v in vars(a).items():
-                    if k.startswith("_"):
-                        continue
-                    if v is None or isinstance(v, (str, int, float, bool)):
-                        row[k] = v
-                    elif isinstance(v, (date, datetime)):
-                        row[k] = str(v)
-                    elif hasattr(v, "type_key"):
-                        row[k] = v.type_key
-                    elif hasattr(v, "type_id"):
-                        row[k] = v.type_id
-                act_rows.append(row)
-            # Filter to date range
-            filtered = []
-            for r in act_rows:
-                ts = str(r.get("start_time_local", ""))[:10]
-                if ts and str(start) <= ts <= str(end):
-                    filtered.append(r)
-            data["activities"] = pd.DataFrame(filtered) if filtered else pd.DataFrame()
-            log.info(f"   ✅ Activities:           {len(filtered)} in range")
-        except Exception as e:
-            log.info(f"   ⚠️  Activities: {e}")
 
         return data
 

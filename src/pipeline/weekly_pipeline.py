@@ -62,7 +62,6 @@ class WeeklySyncPipeline:
 
         try:
             log.info("Step 0/5: Running startup migrations...")
-            ensure_startup_schema(self.conn_str)
 
             if not skip_fetch:
                 log.info("Step 1/5: Fetching last %s days from Garmin...", self.fetch_days)
