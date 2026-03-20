@@ -232,49 +232,62 @@ class EnhancedGarminDataFetcher:
         
         return None
 
-    def _restore_session_from_db(self):
+        def _restore_session_from_db(self):
         if not self.conn_str:
             return
         try:
             conn = psycopg2.connect(self.conn_str, sslmode="require")
             cur = conn.cursor()
-            cur.execute("SELECT value FROM app_config WHERE key = 'garth_oauth2_token'")
-            row = cur.fetchone()
+            Path(self.session_dir).mkdir(parents=True, exist_ok=True)
+            restored = 0
+            for token_key, filename in [
+                ("garth_oauth2_token", "oauth2_token.json"),
+                ("garth_oauth1_token", "oauth1_token.json"),
+            ]:
+                cur.execute(
+                    "SELECT value FROM app_config WHERE key = %s",
+                    (token_key,),
+                )
+                row = cur.fetchone()
+                if row:
+                    (Path(self.session_dir) / filename).write_text(row[0])
+                    restored += 1
             cur.close()
             conn.close()
-            if row:
-                Path(self.session_dir).mkdir(parents=True, exist_ok=True)
-                (Path(self.session_dir) / "oauth2_token.json").write_text(row[0])
-                log.info("✅ Garth session restored from DB")
+            if restored:
+                log.info("\u2705 Garth session restored from DB (%d token files)", restored)
             else:
-                log.info("⚠️ No garth session in DB — will attempt fresh login")
+                log.info("\u26a0\ufe0f No garth session in DB \u2014 will attempt fresh login")
         except Exception as e:
             log.warning("Could not restore garth session from DB: %s", e)
 
     def _persist_session_to_db(self) -> None:
-        token_path = Path(self.session_dir) / "oauth2_token.json"
-        if not token_path.exists():
-            log.warning("No oauth2_token.json found to persist")
-            return
         try:
-            token_data = token_path.read_text()
             conn = psycopg2.connect(self.conn_str, sslmode="require")
             conn.autocommit = True
             cur = conn.cursor()
-            cur.execute("""
-                        INSERT INTO app_config (key, value, updated_at)
-                        VALUES ('garth_oauth2_token', %s, NOW())
-                        ON CONFLICT (key) DO UPDATE
-                            SET value      = EXCLUDED.value,
-                                updated_at = NOW()
-                        """, (token_data,))
+            saved = 0
+            for token_key, filename in [
+                ("garth_oauth2_token", "oauth2_token.json"),
+                ("garth_oauth1_token", "oauth1_token.json"),
+            ]:
+                token_path = Path(self.session_dir) / filename
+                if not token_path.exists():
+                    continue
+                token_data = token_path.read_text()
+                cur.execute("""
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                        SET value = EXCLUDED.value,
+                            updated_at = NOW()
+                """, (token_key, token_data))
+                saved += 1
             cur.close()
             conn.close()
-            log.info("💾 Garth session saved to DB")
-
+            log.info("\U0001f4be Garth session saved to DB (%d token files)", saved)
         except Exception as e:
             log.warning("Could not persist garth session to DB: %s", e)
-
 
     def authenticate(self) -> bool:
         """Authenticate with Garmin Connect.
