@@ -238,7 +238,7 @@ class EnhancedGarminDataFetcher:
         try:
             conn = psycopg2.connect(self.conn_str, sslmode="require")
             cur = conn.cursor()
-            cur.execute("SELECT value FROM app_config WHERE key = 'garth_ouath2_token'")
+            cur.execute("SELECT value FROM app_config WHERE key = 'garth_oauth2_token'")
             row = cur.fetchone()
             cur.close()
             conn.close()
