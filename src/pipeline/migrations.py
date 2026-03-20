@@ -60,7 +60,7 @@ def ensure_startup_schema(conn_str: str | None = None) -> None:
                             value      TEXT NOT NULL,
                             updated_at TIMESTAMPTZ DEFAULT NOW()
                         )
-                        """)
+                    """)
 
     finally:
         conn.close()
