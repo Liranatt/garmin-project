@@ -23,16 +23,6 @@ jobs:
       - name: Run tests
         run: pytest -q
 
-      - name: Restore garth session
-        run: |
-          mkdir -p ~/.garth
-          if [ -n "${{ secrets.GARTH_SESSION }}" ]; then
-            echo '${{ secrets.GARTH_SESSION }}' | base64 -d > ~/.garth/oauth1_token.json || true
-          fi
-          if [ -n "${{ secrets.GARTH_SESSION_OAUTH2 }}" ]; then
-            echo '${{ secrets.GARTH_SESSION_OAUTH2 }}' | base64 -d > ~/.garth/oauth2_token.json || true
-          fi
-
       - name: Run daily sync pipeline
         env:
           POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
@@ -71,12 +61,3 @@ jobs:
           path: src/pipeline_status.json
           if-no-files-found: warn
 
-      - name: Save garth session
-        if: always()
-        run: |
-          if [ -f ~/.garth/oauth1_token.json ]; then
-            echo "GARTH_SESSION=$(base64 -w0 ~/.garth/oauth1_token.json)" >> $GITHUB_ENV
-          fi
-          if [ -f ~/.garth/oauth2_token.json ]; then
-            echo "GARTH_SESSION_OAUTH2=$(base64 -w0 ~/.garth/oauth2_token.json)" >> $GITHUB_ENV
-          fi
