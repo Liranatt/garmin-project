@@ -399,26 +399,96 @@ class EnhancedGarminDataFetcher:
         except Exception as e:
             log.warning (" failed: %s - %s", name, e)
             return None
-    def _fetch_all_sources(self, start: date, end: date,
-                           days: int) -> Dict[str, Any]:
+
+    def _fetch_all_sources(self, start: date, end: date, days: int) -> Dict[str, Any]:
         """Fetch from all proven Garmin API endpoints."""
         data: Dict[str, Any] = {}
         start_s = str(start)
-        endpoints = ["heart_rate", "body_battery", "steps", "training_readiness", "hrv, stress", "intensity", "weight", "activities"]
-        for raw in endpoints:
-            raw = self._safe_fetch("heart_rate", f"/usersummary-service/stats/heartRate/daily/{start}/{end}")
-            if raw is not None:
-                data["heart_rate"] = pd.json_normalize(raw)
 
-        # Sleep (per day — most reliable, has sleepScores)
+        # Heart Rate
+        raw = self._safe_fetch("heart_rate", f"/usersummary-service/stats/heartRate/daily/{start}/{end}")
+        if raw is not None:
+            data["heart_rate"] = pd.json_normalize(raw)
+
+        # Body Battery
+        raw = self._safe_fetch("body_battery",
+                               f"/wellness-service/wellness/bodyBattery/reports/daily?startDate={start}&endDate={end}")
+        if raw is not None:
+            data["body_battery"] = pd.json_normalize(raw)
+
+        # Steps
+        raw = self._safe_fetch("steps", f"/usersummary-service/stats/steps/daily/{start}/{end}")
+        if raw is not None:
+            data["steps_raw"] = pd.json_normalize(raw)
+
+        # Training Readiness
+        raw = self._safe_fetch("training_readiness", f"/metrics-service/metrics/trainingreadiness/{start}/{end}")
+        if raw is not None:
+            data["training_readiness"] = pd.json_normalize(raw)
+
+        # HRV
+        raw = self._safe_fetch("hrv", f"/hrv-service/hrv/daily/{start}/{end}")
+        if raw is not None:
+            hrv_list = raw.get("hrvSummaries", []) if isinstance(raw, dict) else []
+            if hrv_list:
+                data["hrv"] = pd.json_normalize(hrv_list)
+
+        # Stress
+        raw = self._safe_fetch("stress", f"/usersummary-service/stats/stress/daily/{start}/{end}")
+        if raw is not None:
+            data["stress"] = pd.json_normalize(raw)
+
+        # Intensity Minutes (garth typed objects)
+        try:
+            im_items = garth.DailyIntensityMinutes.list(start_s, days)
+            if im_items:
+                rows = [deep_vars(obj) for obj in im_items]
+                data["intensity"] = pd.json_normalize([r for r in rows if r])
+                log.info("  fetched: intensity")
+        except Exception as e:
+            log.warning("  failed: intensity — %s", e)
+
+        # Weight (garth typed objects)
+        try:
+            w_items = garth.WeightData.list(start_s, days)
+            if w_items:
+                rows = [deep_vars(obj) for obj in w_items]
+                data["weight"] = pd.json_normalize([r for r in rows if r])
+                log.info("  fetched: weight")
+        except Exception as e:
+            log.warning("  failed: weight — %s", e)
+
+        # Activities (garth typed objects)
+        try:
+            acts = garth.Activity.list(limit=50, start=0)
+            act_rows = []
+            for a in acts:
+                row = {}
+                for k, v in vars(a).items():
+                    if k.startswith("_"):
+                        continue
+                    if v is None or isinstance(v, (str, int, float, bool)):
+                        row[k] = v
+                    elif isinstance(v, (date, datetime)):
+                        row[k] = str(v)
+                    elif hasattr(v, "type_key"):
+                        row[k] = v.type_key
+                    elif hasattr(v, "type_id"):
+                        row[k] = v.type_id
+                act_rows.append(row)
+            filtered = [r for r in act_rows if str(start) <= str(r.get("start_time_local", ""))[:10] <= str(end)]
+            data["activities"] = pd.DataFrame(filtered) if filtered else pd.DataFrame()
+            log.info("  fetched: activities (%d in range)", len(filtered))
+        except Exception as e:
+            log.warning("  failed: activities — %s", e)
+
+        # Sleep (per day loop — leave this as original, it works)
         try:
             sleep_rows = []
             for d in range(days + 1):
                 day = start + timedelta(days=d)
                 try:
-                    s = self._api_call(
-                        f"/wellness-service/wellness/dailySleepData"
-                        f"?date={day}&nonSleepBufferMinutes=60")
+                    s = self._api_call(f"/wellness-service/wellness/dailySleepData?date={day}&nonSleepBufferMinutes=60")
                     if isinstance(s, dict) and s.get("dailySleepDTO"):
                         dto = s["dailySleepDTO"]
                         row = {
@@ -428,8 +498,7 @@ class EnhancedGarminDataFetcher:
                             "lightSleepSeconds": dto.get("lightSleepSeconds"),
                             "remSleepSeconds": dto.get("remSleepSeconds"),
                             "awakeSleepSeconds": dto.get("awakeSleepSeconds"),
-                            "awakeCount": (dto.get("awakeSleepCount")
-                                           or dto.get("awakeCount")),
+                            "awakeCount": (dto.get("awakeSleepCount") or dto.get("awakeCount")),
                             "sleepStartLocal": dto.get("sleepStartTimestampLocal"),
                             "sleepEndLocal": dto.get("sleepEndTimestampLocal"),
                             "averageRespirationValue": dto.get("averageRespirationValue"),
@@ -453,11 +522,9 @@ class EnhancedGarminDataFetcher:
                     pass
             if sleep_rows:
                 data["sleep"] = pd.DataFrame(sleep_rows)
-                log.info(f"   ✅ Sleep:                {len(data['sleep'])} nights")
+                log.info("  fetched: sleep (%d nights)", len(sleep_rows))
         except Exception as e:
-            log.info(f"   ⚠️  Sleep: {e}")
-
-
+            log.warning("  failed: sleep — %s", e)
 
         return data
 
