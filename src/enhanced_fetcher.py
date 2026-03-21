@@ -233,33 +233,33 @@ class EnhancedGarminDataFetcher:
         return None
 
         def _restore_session_from_db(self):
-        if not self.conn_str:
-            return
-        try:
-            conn = psycopg2.connect(self.conn_str, sslmode="require")
-            cur = conn.cursor()
-            Path(self.session_dir).mkdir(parents=True, exist_ok=True)
-            restored = 0
-            for token_key, filename in [
-                ("garth_oauth2_token", "oauth2_token.json"),
-                ("garth_oauth1_token", "oauth1_token.json"),
-            ]:
-                cur.execute(
-                    "SELECT value FROM app_config WHERE key = %s",
-                    (token_key,),
-                )
-                row = cur.fetchone()
-                if row:
-                    (Path(self.session_dir) / filename).write_text(row[0])
-                    restored += 1
-            cur.close()
-            conn.close()
-            if restored:
-                log.info("\u2705 Garth session restored from DB (%d token files)", restored)
-            else:
-                log.info("\u26a0\ufe0f No garth session in DB \u2014 will attempt fresh login")
-        except Exception as e:
-            log.warning("Could not restore garth session from DB: %s", e)
+          if not self.conn_str:
+              return
+          try:
+              conn = psycopg2.connect(self.conn_str, sslmode="require")
+              cur = conn.cursor()
+              Path(self.session_dir).mkdir(parents=True, exist_ok=True)
+              restored = 0
+              for token_key, filename in [
+                  ("garth_oauth2_token", "oauth2_token.json"),
+                  ("garth_oauth1_token", "oauth1_token.json"),
+              ]:
+                  cur.execute(
+                      "SELECT value FROM app_config WHERE key = %s",
+                      (token_key,),
+                  )
+                  row = cur.fetchone()
+                  if row:
+                      (Path(self.session_dir) / filename).write_text(row[0])
+                      restored += 1
+              cur.close()
+              conn.close()
+              if restored:
+                  log.info("\u2705 Garth session restored from DB (%d token files)", restored)
+              else:
+                  log.info("\u26a0\ufe0f No garth session in DB \u2014 will attempt fresh login")
+          except Exception as e:
+              log.warning("Could not restore garth session from DB: %s", e)
 
     def _persist_session_to_db(self) -> None:
         try:
