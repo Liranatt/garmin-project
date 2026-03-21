@@ -257,6 +257,14 @@ class EnhancedGarminDataFetcher:
         """Robust API call with exponential backoff."""
         return garth.client.connectapi(endpoint)
 
+    def _apply_quality_fixes(self, daily: Dict[str, Dict]) -> Dict[str, Dict]:
+        """Apply proven data-quality fixes."""
+        for d, row in daily.items():
+            # Fix 1: HRV weekly avg sentinel 511 -> None
+            if row.get("tr_hrv_weekly_avg") == 511:
+                row["tr_hrv_weekly_avg"] = None
+        return daily
+
     def fetch_and_store(self, days: int = 7) -> Dict[str, int]:
         """Main execution path. No silent failures."""
         if not self.authenticated:
@@ -272,9 +280,7 @@ class EnhancedGarminDataFetcher:
         daily = self._build_daily_rows(data)
         
         # Cleanup
-        for d, row in daily.items():
-            if row.get("tr_hrv_weekly_avg") == 511:
-                row["tr_hrv_weekly_avg"] = None
+        daily = self._apply_quality_fixes(daily)
 
         log.info("Writing results to database...")
         try:
