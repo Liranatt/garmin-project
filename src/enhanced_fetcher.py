@@ -144,7 +144,6 @@ class EnhancedGarminDataFetcher:
             if not email_ids:
                 raise MFAError("No MFA emails found from alerts@account.garmin.com")
 
-            # Check last 5 emails
             for e_id in email_ids[-5:][::-1]:
                 _, data = mail.fetch(e_id, "(RFC822)")
                 msg = email.message_from_bytes(data[0][1])
@@ -172,7 +171,7 @@ class EnhancedGarminDataFetcher:
             raise MFAError(f"Failed to connect or login to IMAP: {e}")
 
     def _restore_session_from_db(self) -> int:
-        """Attempt to restore session files. Returns count of files restored."""
+        """Attempt to restore session files."""
         log.info("Attempting session restoration from database...")
         try:
             with psycopg2.connect(self.conn_str, sslmode="require") as conn:
@@ -206,7 +205,6 @@ class EnhancedGarminDataFetcher:
                     ]:
                         token_path = Path(self.session_dir) / fname
                         if not token_path.exists():
-                            log.warning(f"Session file {fname} missing after login.")
                             continue
                         cur.execute("""
                             INSERT INTO app_config (key, value, updated_at)
@@ -220,23 +218,20 @@ class EnhancedGarminDataFetcher:
         """Deterministic authentication flow."""
         self._restore_session_from_db()
         
-        # 1. Try Resume
         try:
             garth.resume(self.session_dir)
-            _ = garth.client.username # Verification call
+            _ = garth.client.username
             self.authenticated = True
             log.info("Garmin session resumed successfully.")
             return True
-        except Exception as e:
-            log.info(f"Session resume failed/expired: {e}. Attempting fresh login.")
+        except Exception:
+            log.info("Session resume failed/expired. Attempting fresh login.")
 
-        # 2. MFA Setup
         def mfa_callback():
             log.info("Waiting 15s for MFA email delivery...")
             time.sleep(15)
             return self._get_mfa_code_from_email()
 
-        # 3. Full Login
         try:
             garth.login(self.email, self.password, prompt_mfa=mfa_callback)
             self.authenticated = True
@@ -254,19 +249,15 @@ class EnhancedGarminDataFetcher:
         reraise=True
     )
     def _api_call(self, endpoint: str) -> Any:
-        """Robust API call with exponential backoff."""
         return garth.client.connectapi(endpoint)
 
     def _apply_quality_fixes(self, daily: Dict[str, Dict]) -> Dict[str, Dict]:
-        """Apply proven data-quality fixes."""
         for d, row in daily.items():
-            # Fix 1: HRV weekly avg sentinel 511 -> None
             if row.get("tr_hrv_weekly_avg") == 511:
                 row["tr_hrv_weekly_avg"] = None
         return daily
 
     def fetch_and_store(self, days: int = 7) -> Dict[str, int]:
-        """Main execution path. No silent failures."""
         if not self.authenticated:
             raise AuthenticationError("Fetcher not authenticated.")
 
@@ -274,12 +265,8 @@ class EnhancedGarminDataFetcher:
         end = date.today()
         
         log.info(f"Fetching data for {days} days ({start} to {end})")
-        
-        # Fetching - if a core source fails, we fail the pipeline
         data = self._fetch_all_sources(start, end, days)
         daily = self._build_daily_rows(data)
-        
-        # Cleanup
         daily = self._apply_quality_fixes(daily)
 
         log.info("Writing results to database...")
@@ -297,10 +284,7 @@ class EnhancedGarminDataFetcher:
             raise DatabaseError(f"Critical DB failure during upsert: {e}")
 
     def _fetch_all_sources(self, start: date, end: date, days: int) -> Dict[str, Any]:
-        """Fetch sources. Core sources raise on failure; secondary sources log."""
         results: Dict[str, Any] = {}
-        
-        # Core Health Sources
         core_endpoints = {
             "heart_rate": f"/usersummary-service/stats/heartRate/daily/{start}/{end}",
             "body_battery": f"/wellness-service/wellness/bodyBattery/reports/daily?startDate={start}&endDate={end}",
@@ -318,30 +302,31 @@ class EnhancedGarminDataFetcher:
                 else:
                     results[name] = pd.json_normalize(res)
             except Exception as e:
-                # Core sources must fail fast
                 raise GarminFetcherError(f"Failed to fetch core source '{name}': {e}")
 
-        # Secondary/Object-based sources (Garth objects)
         try:
             results["intensity"] = pd.json_normalize([deep_vars(o) for o in garth.DailyIntensityMinutes.list(str(start), days)])
             results["weight"] = pd.json_normalize([deep_vars(o) for o in garth.WeightData.list(str(start), days)])
             
             acts = garth.Activity.list(limit=50)
-            act_rows = [{k: v for k, v in vars(a).items() if not k.startswith("_")} for a in acts]
+            act_rows = []
+            for a in acts:
+                row = {k: v for k, v in vars(a).items() if not k.startswith("_")}
+                if "start_time_local" in row and isinstance(row["start_time_local"], str):
+                    act_rows.append(row)
             df = pd.DataFrame(act_rows)
-            results["activities"] = df[df["start_time_local"].str[:10].between(str(start), str(end))]
+            if not df.empty:
+                results["activities"] = df[df["start_time_local"].str[:10].between(str(start), str(end))]
         except Exception as e:
             log.warning(f"Failed to fetch secondary sources (non-fatal): {e}")
 
         return results
 
     def _build_daily_rows(self, raw: Dict[str, Any]) -> Dict[str, Dict]:
-        """Strict row merging."""
         daily: Dict[str, Dict] = {}
         for name, df in raw.items():
             if not isinstance(df, pd.DataFrame) or df.empty: continue
             
-            # Find date column
             date_col = next((c for c in ["calendarDate", "date", "calendar_date"] if c in df.columns), None)
             if not date_col: continue
 
@@ -349,7 +334,6 @@ class EnhancedGarminDataFetcher:
                 d = str(r[date_col])
                 daily.setdefault(d, {"date": d})
                 
-                # Rigid mapping
                 if name == "heart_rate":
                     daily[d].update({
                         "resting_hr": r.get("values.restingHR"),
@@ -369,11 +353,16 @@ class EnhancedGarminDataFetcher:
         count = 0
         for d_key in sorted(daily):
             row = daily[d_key]
-            cols = [c for c in DAILY_COLS if c in row]
+            # ONLY include columns that are actually present in the row data
+            cols = [c for c in DAILY_COLS if c in row and row[c] is not None]
+            if not cols or (len(cols) == 1 and cols[0] == "date"):
+                continue
+                
             vals = [_safe_val(row[c]) for c in cols]
-            
             upd = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols if c != "date"])
-            sql = f"INSERT INTO daily_metrics ({','.join(cols)}) VALUES ({','.join(['%s']*len(cols))}) ON CONFLICT (date) DO UPDATE SET {upd}, updated_at = NOW()"
+            
+            sql = f"INSERT INTO daily_metrics ({','.join(cols)}) VALUES ({','.join(['%s']*len(cols))}) " \
+                  f"ON CONFLICT (date) DO UPDATE SET {upd}, updated_at = NOW()"
             cur.execute(sql, vals)
             count += 1
         return count
@@ -386,7 +375,6 @@ class EnhancedGarminDataFetcher:
         return len(df)
 
     def _upsert_bb_events(self, cur: Any, df: pd.DataFrame) -> int:
-        # Implementation depends on specific schema
         return 0
 
 if __name__ == "__main__":
@@ -394,7 +382,6 @@ if __name__ == "__main__":
     try:
         fetcher = EnhancedGarminDataFetcher()
         if fetcher.authenticate():
-            log.info("Authentication Success.")
             res = fetcher.fetch_and_store(days=2)
             log.info(f"Sync complete: {res}")
     except Exception as e:
