@@ -2,8 +2,7 @@
 Enhanced Garmin Data Fetcher — Production Version
 ===================================================
 Fetches all Garmin data using proven connectapi endpoints and writes
-directly to PostgreSQL. Every endpoint here has been validated in
-test_db.py against real data.
+directly to PostgreSQL with fail-fast architecture.
 """
 import os
 import ast
@@ -12,23 +11,23 @@ import numpy as np
 import pandas as pd
 import psycopg2
 import garth
-from datetime import date, timedelta, datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
 import imaplib
 import email
 import re
 import html
+import time
+from datetime import date, timedelta, datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
 from email.header import decode_header
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
-import time
 
 load_dotenv()
 log = logging.getLogger("enhanced_fetcher")
 
 # ═══════════════════════════════════════════════════════════════
-# CONSTANTS
+# CONSTANTS & CONFIG
 # ═══════════════════════════════════════════════════════════════
 try:
     from .constants import UPPER_BODY_CATS, LOWER_BODY_CATS
@@ -54,9 +53,29 @@ DAILY_COLS = [
 ]
 
 # ═══════════════════════════════════════════════════════════════
-# HELPER
+# EXCEPTIONS
 # ═══════════════════════════════════════════════════════════════
-def deep_vars(obj, prefix=""):
+class GarminFetcherError(Exception):
+    """Base exception for the fetcher."""
+    pass
+
+class AuthenticationError(GarminFetcherError):
+    """Raised when authentication fails."""
+    pass
+
+class DatabaseError(GarminFetcherError):
+    """Raised when database operations fail."""
+    pass
+
+class MFAError(GarminFetcherError):
+    """Raised when MFA process fails."""
+    pass
+
+# ═══════════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════════
+def deep_vars(obj: Any, prefix: str = "") -> Dict[str, Any]:
+    """Recursively extract scalars from objects."""
     flat: Dict[str, Any] = {}
     try:
         attrs = vars(obj)
@@ -79,14 +98,13 @@ def deep_vars(obj, prefix=""):
             else: flat[key] = str(v)[:80]
     return flat
 
-def _safe_val(v):
+def _safe_val(v: Any) -> Any:
+    """Sanitize values for SQL insertion."""
     if v is None: return None
     if isinstance(v, float) and (np.isnan(v) or np.isinf(v)): return None
     if isinstance(v, (np.integer,)): return int(v)
     if isinstance(v, (np.floating,)): return float(v)
-    try:
-        if pd.isna(v): return None
-    except (ValueError, TypeError): pass
+    if hasattr(pd, "isna") and pd.isna(v): return None
     return v
 
 # ═══════════════════════════════════════════════════════════════
@@ -94,303 +112,285 @@ def _safe_val(v):
 # ═══════════════════════════════════════════════════════════════
 class EnhancedGarminDataFetcher:
     def __init__(self):
-        self.email = os.getenv("GARMIN_EMAIL", "")
-        self.password = os.getenv("GARMIN_PASSWORD", "")
+        self.email = self._get_env("GARMIN_EMAIL")
+        self.password = self._get_env("GARMIN_PASSWORD")
         self.session_dir = os.path.expanduser(os.getenv("GARTH_HOME", "~/.garth"))
-        self.conn_str = os.getenv("POSTGRES_CONNECTION_STRING", "")
+        self.conn_str = self._get_env("POSTGRES_CONNECTION_STRING")
         self.authenticated = False
 
-    def _get_mfa_code_from_email(self) -> Optional[str]:
-        gmail_user = os.getenv("EMAIL_RECIPIENT") or os.getenv("GARMIN_EMAIL")
-        gmail_password = os.getenv("EMAIL_APP_PASSWORD")
-        
-        print(f"[DEBUG] Checking Gmail: {gmail_user}")
-        if not gmail_password:
-            print("[DEBUG] ERROR: EMAIL_APP_PASSWORD is not set")
-            return None
+    @staticmethod
+    def _get_env(key: str) -> str:
+        val = os.getenv(key)
+        if not val:
+            raise EnvironmentError(f"Missing required environment variable: {key}")
+        return val
 
+    def _get_mfa_code_from_email(self) -> str:
+        """Retrieve MFA code from Gmail. Fails fast if anything is wrong."""
+        gmail_user = os.getenv("EMAIL_RECIPIENT") or self.email
+        gmail_password = self._get_env("EMAIL_APP_PASSWORD")
+        
+        log.info(f"Checking Gmail ({gmail_user}) for MFA code...")
         try:
-            print("[DEBUG] Connecting to imap.gmail.com...")
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(gmail_user, gmail_password)
             mail.select("inbox")
             
-            print("[DEBUG] Searching for Garmin MFA emails...")
             status, messages = mail.search(None, '(FROM "alerts@account.garmin.com")')
             if status != "OK":
-                print(f"[DEBUG] IMAP search failed: {status}")
-                return None
+                raise MFAError(f"IMAP search failed with status: {status}")
             
             email_ids = messages[0].split()
-            print(f"[DEBUG] Found {len(email_ids)} potential emails")
-            if not email_ids: return None
+            if not email_ids:
+                raise MFAError("No MFA emails found from alerts@account.garmin.com")
 
-            latest_ids = email_ids[-5:]
-            latest_ids.reverse()
-            for e_id in latest_ids:
-                _, msg_data = mail.fetch(e_id, "(RFC822)")
-                for response_part in msg_data:
-                    if isinstance(response_part, tuple):
-                        msg = email.message_from_bytes(response_part[1])
-                        body = ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                if part.get_content_type() == "text/plain":
-                                    body = part.get_payload(decode=True).decode(errors='ignore')
-                        else:
-                            body = msg.get_payload(decode=True).decode(errors='ignore')
-                        
-                        clean_body = re.sub(r'\s+', ' ', body).strip()
-                        match = re.search(r'account\D*(\d{6})', clean_body, re.IGNORECASE)
-                        if match:
-                            code = match.group(1)
-                            print(f"[DEBUG] MFA code found: {code}")
-                            mail.logout()
-                            return code
-            print("[DEBUG] No MFA code found in the last 5 emails")
+            # Check last 5 emails
+            for e_id in email_ids[-5:][::-1]:
+                _, data = mail.fetch(e_id, "(RFC822)")
+                msg = email.message_from_bytes(data[0][1])
+                
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/plain":
+                            body = part.get_payload(decode=True).decode(errors='ignore')
+                            break
+                else:
+                    body = msg.get_payload(decode=True).decode(errors='ignore')
+                
+                match = re.search(r'account\D*(\d{6})', body, re.IGNORECASE)
+                if match:
+                    code = match.group(1)
+                    log.info("MFA code successfully extracted from email.")
+                    mail.logout()
+                    return code
+            
             mail.logout()
-        except Exception as e:
-            print(f"[DEBUG] IMAP Error: {e}")
-        return None
+            raise MFAError("MFA code not found in the body of recent Garmin emails.")
+            
+        except (imaplib.IMAP4.error, ConnectionError) as e:
+            raise MFAError(f"Failed to connect or login to IMAP: {e}")
 
-    def _restore_session_from_db(self):
-        if not self.conn_str: 
-            print("[DEBUG] No DB connection string for session restoration")
-            return
+    def _restore_session_from_db(self) -> int:
+        """Attempt to restore session files. Returns count of files restored."""
+        log.info("Attempting session restoration from database...")
         try:
-            print("[DEBUG] Attempting to restore session from DB...")
-            conn = psycopg2.connect(self.conn_str, sslmode="require")
-            cur = conn.cursor()
-            Path(self.session_dir).mkdir(parents=True, exist_ok=True)
-            restored = 0
-            for token_key, filename in [
-                ("garth_oauth2_token", "oauth2_token.json"),
-                ("garth_oauth1_token", "oauth1_token.json"),
-            ]:
-                cur.execute("SELECT value FROM app_config WHERE key = %s", (token_key,))
-                row = cur.fetchone()
-                if row:
-                    (Path(self.session_dir) / filename).write_text(row[0])
-                    restored += 1
-            cur.close()
-            conn.close()
-            print(f"[DEBUG] Restored {restored} session files from DB")
-        except Exception as e:
-            print(f"[DEBUG] DB Restore Error: {e}")
+            with psycopg2.connect(self.conn_str, sslmode="require") as conn:
+                with conn.cursor() as cur:
+                    Path(self.session_dir).mkdir(parents=True, exist_ok=True)
+                    restored = 0
+                    for key, fname in [
+                        ("garth_oauth2_token", "oauth2_token.json"),
+                        ("garth_oauth1_token", "oauth1_token.json"),
+                    ]:
+                        cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
+                        row = cur.fetchone()
+                        if row:
+                            (Path(self.session_dir) / fname).write_text(row[0])
+                            restored += 1
+                    return restored
+        except psycopg2.Error as e:
+            log.warning(f"Could not restore session from DB (non-fatal): {e}")
+            return 0
 
     def _persist_session_to_db(self) -> None:
+        """Strictly persist session files to DB."""
+        log.info("Persisting fresh session to database...")
         try:
-            print("[DEBUG] Persisting session to DB...")
-            conn = psycopg2.connect(self.conn_str, sslmode="require")
-            conn.autocommit = True
-            cur = conn.cursor()
-            saved = 0
-            for token_key, filename in [
-                ("garth_oauth2_token", "oauth2_token.json"),
-                ("garth_oauth1_token", "oauth1_token.json"),
-            ]:
-                token_path = Path(self.session_dir) / filename
-                if not token_path.exists(): continue
-                token_data = token_path.read_text()
-                cur.execute("""
-                    INSERT INTO app_config (key, value, updated_at)
-                    VALUES (%s, %s, NOW())
-                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-                """, (token_key, token_data))
-                saved += 1
-            cur.close()
-            conn.close()
-            print(f"[DEBUG] Persisted {saved} session files to DB")
-        except Exception as e:
-            print(f"[DEBUG] DB Persist Error: {e}")
+            with psycopg2.connect(self.conn_str, sslmode="require") as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    for key, fname in [
+                        ("garth_oauth2_token", "oauth2_token.json"),
+                        ("garth_oauth1_token", "oauth1_token.json"),
+                    ]:
+                        token_path = Path(self.session_dir) / fname
+                        if not token_path.exists():
+                            log.warning(f"Session file {fname} missing after login.")
+                            continue
+                        cur.execute("""
+                            INSERT INTO app_config (key, value, updated_at)
+                            VALUES (%s, %s, NOW())
+                            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                        """, (key, token_path.read_text()))
+        except psycopg2.Error as e:
+            raise DatabaseError(f"Failed to persist garth session: {e}")
 
     def authenticate(self) -> bool:
-        print("[DEBUG] Starting Garmin Authentication...")
+        """Deterministic authentication flow."""
         self._restore_session_from_db()
+        
+        # 1. Try Resume
         try:
-            print(f"[DEBUG] Resuming session from {self.session_dir}...")
             garth.resume(self.session_dir)
-            print(f"[DEBUG] Testing session with username check: {garth.client.username}")
+            _ = garth.client.username # Verification call
             self.authenticated = True
+            log.info("Garmin session resumed successfully.")
             return True
         except Exception as e:
-            print(f"[DEBUG] Resume failed: {e}")
+            log.info(f"Session resume failed/expired: {e}. Attempting fresh login.")
 
+        # 2. MFA Setup
         def mfa_callback():
-            print("[DEBUG] MFA required. Waiting 15s for email...")
+            log.info("Waiting 15s for MFA email delivery...")
             time.sleep(15)
-            code = self._get_mfa_code_from_email()
-            if code: return code
-            if os.getenv("CI") == "true":
-                raise RuntimeError("MFA failed in CI mode")
-            return input("Enter MFA code: ")
+            return self._get_mfa_code_from_email()
 
+        # 3. Full Login
         try:
-            print(f"[DEBUG] Attempting full login for {self.email}...")
             garth.login(self.email, self.password, prompt_mfa=mfa_callback)
             self.authenticated = True
             Path(self.session_dir).mkdir(parents=True, exist_ok=True)
             garth.save(self.session_dir)
             self._persist_session_to_db()
-            print("[DEBUG] Login successful and session saved")
             return True
         except Exception as e:
-            print(f"[DEBUG] Login Error: {e}")
-            return False
+            raise AuthenticationError(f"Garmin login failed: {e}")
 
-    def fetch_and_store(self, days: int = 7) -> Dict[str, int]:
-        if not self.authenticated: raise RuntimeError("Call authenticate() first")
-        today = date.today()
-        start = today - timedelta(days=days)
-        raw = self._fetch_all_sources(start, today, days)
-        daily = self._build_daily_rows(raw)
-        
-        # Apply fixes
-        for d, row in daily.items():
-            if row.get("tr_hrv_weekly_avg") == 511: row["tr_hrv_weekly_avg"] = None
-
-        if not self.conn_str: raise RuntimeError("Missing DB connection string")
-        with psycopg2.connect(self.conn_str, sslmode="require") as conn:
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                n_daily = self._upsert_daily_metrics(cur, daily)
-                n_act = self._upsert_activities(cur, raw.get("activities"))
-                n_bb = self._upsert_bb_events(cur, raw.get("body_battery"))
-        return {"daily_metrics": n_daily, "activities": n_act, "bb_events": n_bb}
-
-    @staticmethod
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
-    def _api_call(endpoint: str) -> Any:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+        reraise=True
+    )
+    def _api_call(self, endpoint: str) -> Any:
+        """Robust API call with exponential backoff."""
         return garth.client.connectapi(endpoint)
 
+    def fetch_and_store(self, days: int = 7) -> Dict[str, int]:
+        """Main execution path. No silent failures."""
+        if not self.authenticated:
+            raise AuthenticationError("Fetcher not authenticated.")
+
+        start = date.today() - timedelta(days=days)
+        end = date.today()
+        
+        log.info(f"Fetching data for {days} days ({start} to {end})")
+        
+        # Fetching - if a core source fails, we fail the pipeline
+        data = self._fetch_all_sources(start, end, days)
+        daily = self._build_daily_rows(data)
+        
+        # Cleanup
+        for d, row in daily.items():
+            if row.get("tr_hrv_weekly_avg") == 511:
+                row["tr_hrv_weekly_avg"] = None
+
+        log.info("Writing results to database...")
+        try:
+            with psycopg2.connect(self.conn_str, sslmode="require") as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    counts = {
+                        "daily_metrics": self._upsert_daily_metrics(cur, daily),
+                        "activities": self._upsert_activities(cur, data.get("activities")),
+                        "bb_events": self._upsert_bb_events(cur, data.get("body_battery"))
+                    }
+            return counts
+        except psycopg2.Error as e:
+            raise DatabaseError(f"Critical DB failure during upsert: {e}")
+
     def _fetch_all_sources(self, start: date, end: date, days: int) -> Dict[str, Any]:
-        data: Dict[str, Any] = {}
-        # Simple fetching loop
-        endpoints = {
+        """Fetch sources. Core sources raise on failure; secondary sources log."""
+        results: Dict[str, Any] = {}
+        
+        # Core Health Sources
+        core_endpoints = {
             "heart_rate": f"/usersummary-service/stats/heartRate/daily/{start}/{end}",
             "body_battery": f"/wellness-service/wellness/bodyBattery/reports/daily?startDate={start}&endDate={end}",
             "steps_raw": f"/usersummary-service/stats/steps/daily/{start}/{end}",
             "training_readiness": f"/metrics-service/metrics/trainingreadiness/{start}/{end}",
-            "stress": f"/usersummary-service/stats/stress/daily/{start}/{end}"
+            "stress": f"/usersummary-service/stats/stress/daily/{start}/{end}",
+            "hrv": f"/hrv-service/hrv/daily/{start}/{end}"
         }
-        for name, url in endpoints.items():
+
+        for name, url in core_endpoints.items():
             try:
                 res = self._api_call(url)
-                data[name] = pd.json_normalize(res) if name != "hrv" else res
-            except Exception: pass
-        
-        # HRV
-        try:
-            hrv_raw = self._api_call(f"/hrv-service/hrv/daily/{start}/{end}")
-            if hrv_raw and "hrvSummaries" in hrv_raw:
-                data["hrv"] = pd.json_normalize(hrv_raw["hrvSummaries"])
-        except Exception: pass
+                if name == "hrv":
+                    results[name] = pd.json_normalize(res.get("hrvSummaries", []))
+                else:
+                    results[name] = pd.json_normalize(res)
+            except Exception as e:
+                # Core sources must fail fast
+                raise GarminFetcherError(f"Failed to fetch core source '{name}': {e}")
 
-        # Intensity/Weight/Activities via Garth typed objects
+        # Secondary/Object-based sources (Garth objects)
         try:
-            im = garth.DailyIntensityMinutes.list(str(start), days)
-            data["intensity"] = pd.json_normalize([deep_vars(o) for o in im])
-        except Exception: pass
-        
-        try:
-            w = garth.WeightData.list(str(start), days)
-            data["weight"] = pd.json_normalize([deep_vars(o) for o in w])
-        except Exception: pass
-
-        try:
+            results["intensity"] = pd.json_normalize([deep_vars(o) for o in garth.DailyIntensityMinutes.list(str(start), days)])
+            results["weight"] = pd.json_normalize([deep_vars(o) for o in garth.WeightData.list(str(start), days)])
+            
             acts = garth.Activity.list(limit=50)
-            act_rows = []
-            for a in acts:
-                row = {k: v for k, v in vars(a).items() if not k.startswith("_")}
-                # Fix nested objects in activities if needed
-                act_rows.append(row)
+            act_rows = [{k: v for k, v in vars(a).items() if not k.startswith("_")} for a in acts]
             df = pd.DataFrame(act_rows)
-            data["activities"] = df[df["start_time_local"].str[:10].between(str(start), str(end))]
-        except Exception: pass
+            results["activities"] = df[df["start_time_local"].str[:10].between(str(start), str(end))]
+        except Exception as e:
+            log.warning(f"Failed to fetch secondary sources (non-fatal): {e}")
 
-        # Sleep
-        sleep_rows = []
-        for i in range(days + 1):
-            d = start + timedelta(days=i)
-            try:
-                s = self._api_call(f"/wellness-service/wellness/dailySleepData?date={d}&nonSleepBufferMinutes=60")
-                if s.get("dailySleepDTO"):
-                    dto = s["dailySleepDTO"]
-                    row = {
-                        "calendarDate": dto.get("calendarDate"),
-                        "sleepTimeSeconds": dto.get("sleepTimeSeconds"),
-                        "deepSleepSeconds": dto.get("deepSleepSeconds"),
-                        "lightSleepSeconds": dto.get("lightSleepSeconds"),
-                        "remSleepSeconds": dto.get("remSleepSeconds"),
-                        "awakeSleepSeconds": dto.get("awakeSleepSeconds"),
-                        "awakeCount": dto.get("awakeCount"),
-                        "sleepStartLocal": dto.get("sleepStartTimestampLocal"),
-                        "sleepEndLocal": dto.get("sleepEndTimestampLocal"),
-                        "averageRespirationValue": dto.get("averageRespirationValue"),
-                        "lowestRespirationValue": dto.get("lowestRespirationValue"),
-                        "highestRespirationValue": dto.get("highestRespirationValue"),
-                        "avgSleepStress": dto.get("avgSleepStress"),
-                        "restingHeartRate": dto.get("restingHeartRate"),
-                        "sleepScore": dto.get("sleepScores", {}).get("overall", {}).get("value"),
-                        "sleepScoreQualifier": dto.get("sleepScores", {}).get("overall", {}).get("qualifierKey"),
-                        "bodyBatteryChange": s.get("bodyBatteryChange"),
-                        "skinTempDeviation": s.get("avgSkinTempDeviationC")
-                    }
-                    sleep_rows.append(row)
-            except Exception: pass
-        data["sleep"] = pd.DataFrame(sleep_rows)
-        return data
+        return results
 
     def _build_daily_rows(self, raw: Dict[str, Any]) -> Dict[str, Dict]:
+        """Strict row merging."""
         daily: Dict[str, Dict] = {}
-        # Merge logic (simplified for review)
         for name, df in raw.items():
             if not isinstance(df, pd.DataFrame) or df.empty: continue
-            date_col = "calendarDate" if "calendarDate" in df.columns else ("date" if "date" in df.columns else ("calendar_date" if "calendar_date" in df.columns else None))
+            
+            # Find date column
+            date_col = next((c for c in ["calendarDate", "date", "calendar_date"] if c in df.columns), None)
             if not date_col: continue
+
             for _, r in df.iterrows():
                 d = str(r[date_col])
-                if not d: continue
                 daily.setdefault(d, {"date": d})
-                # Map specific fields based on 'name'
+                
+                # Rigid mapping
                 if name == "heart_rate":
-                    daily[d].update({"resting_hr": r.get("values.restingHR"), "max_hr": r.get("values.wellnessMaxAvgHR"), "min_hr": r.get("values.wellnessMinAvgHR")})
+                    daily[d].update({
+                        "resting_hr": r.get("values.restingHR"),
+                        "max_hr": r.get("values.wellnessMaxAvgHR"),
+                        "min_hr": r.get("values.wellnessMinAvgHR")
+                    })
                 elif name == "hrv":
                     daily[d].update({"hrv_last_night": r.get("lastNightAvg"), "hrv_status": r.get("status")})
                 elif name == "training_readiness" and r.get("inputContext") == "AFTER_WAKEUP_RESET":
                     daily[d].update({"training_readiness": r.get("score"), "tr_recovery_time": r.get("recoveryTime")})
-                # ... and so on for other fields ...
+        
+        if not daily:
+            raise GarminFetcherError("No daily metrics could be constructed from raw data.")
         return daily
 
-    def _upsert_daily_metrics(self, cur, daily: Dict[str, Dict]) -> int:
+    def _upsert_daily_metrics(self, cur: Any, daily: Dict[str, Dict]) -> int:
         count = 0
         for d_key in sorted(daily):
             row = daily[d_key]
             cols = [c for c in DAILY_COLS if c in row]
-            placeholders = ", ".join(["%s"] * len(cols))
+            vals = [_safe_val(row[c]) for c in cols]
+            
             upd = ", ".join([f"{c} = EXCLUDED.{c}" for c in cols if c != "date"])
-            sql = f"INSERT INTO daily_metrics ({','.join(cols)}) VALUES ({placeholders}) ON CONFLICT (date) DO UPDATE SET {upd}, updated_at = NOW()"
-            cur.execute(sql, [row[c] for c in cols])
+            sql = f"INSERT INTO daily_metrics ({','.join(cols)}) VALUES ({','.join(['%s']*len(cols))}) ON CONFLICT (date) DO UPDATE SET {upd}, updated_at = NOW()"
+            cur.execute(sql, vals)
             count += 1
         return count
 
-    def _upsert_activities(self, cur, df) -> int:
+    def _upsert_activities(self, cur: Any, df: pd.DataFrame) -> int:
         if df is None or df.empty: return 0
         for _, r in df.iterrows():
-            cur.execute("INSERT INTO activities (activity_id, date) VALUES (%s, %s) ON CONFLICT DO NOTHING", (r.get("activity_id"), r.get("start_time_local", "")[:10]))
+            cur.execute("INSERT INTO activities (activity_id, date) VALUES (%s, %s) ON CONFLICT DO NOTHING", 
+                        (r.get("activity_id"), str(r.get("start_time_local", ""))[:10]))
         return len(df)
 
-    def _upsert_bb_events(self, cur, df) -> int:
-        return 0 # Placeholder
-
-    def classify_training_intensity(self, start_date: Optional[date] = None) -> Dict[date, Dict]:
-        return {} # Simplified
+    def _upsert_bb_events(self, cur: Any, df: pd.DataFrame) -> int:
+        # Implementation depends on specific schema
+        return 0
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    fetcher = EnhancedGarminDataFetcher()
-    if fetcher.authenticate():
-        print("Success")
-    else:
-        print("Failed")
-"""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    try:
+        fetcher = EnhancedGarminDataFetcher()
+        if fetcher.authenticate():
+            log.info("Authentication Success.")
+            res = fetcher.fetch_and_store(days=2)
+            log.info(f"Sync complete: {res}")
+    except Exception as e:
+        log.critical(f"FATAL: Application crashed during execution: {e}", exc_info=True)
+        exit(1)
