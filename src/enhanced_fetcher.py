@@ -32,11 +32,8 @@ log = logging.getLogger(\"enhanced_fetcher\")
 try:
     from .constants import UPPER_BODY_CATS, LOWER_BODY_CATS
 except ImportError:
-    try:
-        from constants import UPPER_BODY_CATS, LOWER_BODY_CATS
-    except ImportError:
-        UPPER_BODY_CATS = set()
-        LOWER_BODY_CATS = set()
+    # Fail-fast: If constants.py is missing, this is a deployment error.
+    from constants import UPPER_BODY_CATS, LOWER_BODY_CATS
 
 DAILY_COLS = [
     \"date\", \"resting_hr\", \"max_hr\", \"min_hr\", \"hrv_last_night\", \"hrv_5min_high\",
@@ -193,7 +190,8 @@ class EnhancedGarminDataFetcher:
                             restored += 1
                     return restored
         except psycopg2.Error as e:
-            log.warning(f\"Could not restore session from DB (non-fatal): {e}\")
+            # Failure here means we move to fresh login, which is fine.
+            log.warning(f\"Could not restore session from DB: {e}\")
             return 0
 
     def _persist_session_to_db(self) -> None:
@@ -241,6 +239,7 @@ class EnhancedGarminDataFetcher:
             self._persist_session_to_db()
             return True
         except Exception as e:
+            # Crash loudly on login failure
             raise AuthenticationError(f\"Garmin login failed: {e}\")
 
     @retry(
@@ -292,7 +291,6 @@ class EnhancedGarminDataFetcher:
         if df.empty: return {}
 
         training = {}
-        # Simple classification logic for the pipeline
         for _, r in df.iterrows():
             d = str(r.get(\"start_time_local\", \"\"))[:10]
             if not d: continue
@@ -309,7 +307,7 @@ class EnhancedGarminDataFetcher:
             
             if intensity != \"recovery\":
                 training[d][\"hard_minutes\"] += int(dur)
-            # Take highest intensity of the day
+            
             if intensity == \"high\": training[d][\"intensity\"] = \"high\"
             elif intensity == \"moderate\" and training[d][\"intensity\"] == \"recovery\":
                 training[d][\"intensity\"] = \"moderate\"
@@ -334,6 +332,7 @@ class EnhancedGarminDataFetcher:
                 else:
                     results[name] = pd.json_normalize(res)
             except Exception as e:
+                # Fails fast on any core data fetch failure
                 raise GarminFetcherError(f\"Failed to fetch core source '{name}': {e}\")
 
         try:
@@ -350,7 +349,8 @@ class EnhancedGarminDataFetcher:
             if not df.empty:
                 results[\"activities\"] = df[df[\"start_time_local\"].str[:10].between(str(start), str(end))]
         except Exception as e:
-            log.warning(f\"Failed to fetch secondary sources (non-fatal): {e}\")
+            # Secondary sources: we only warn if they fail, but they shouldn't crash the whole pipeline.
+            log.warning(f\"Failed to fetch secondary sources: {e}\")
         return results
 
     def _build_daily_rows(self, raw: Dict[str, Any]) -&gt; Dict[str, Dict]:
