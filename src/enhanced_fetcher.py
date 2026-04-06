@@ -197,16 +197,16 @@ class EnhancedGarminDataFetcher:
 
     def authenticate(self) -> None:
         """
-        Two explicit, non-overlapping paths:
+        Sequential auth paths:
 
-        Path A — tokens exist in DB (token_count > 0):
+        Path A — tokens exist in DB:
             Restore tokens to disk -> garth.resume() -> validate with network call.
-            Any failure raises AuthenticationError. No fallback to fresh login.
-            A bad/expired stored token requires manual re-bootstrap.
+            On failure: log the exact error and fall through to Path B.
 
-        Path B — no tokens in DB (token_count == 0):
-            Fresh login with MFA -> garth.save() -> persist tokens to DB.
-            This is the first-run / manual bootstrap path only.
+        Path B — fresh login with MFA:
+            Triggered when no tokens in DB, or when Path A validation failed.
+            On success: persist new tokens to DB.
+            On failure: raises AuthenticationError.
         """
         token_count = self._restore_session_from_db()
 
@@ -214,18 +214,16 @@ class EnhancedGarminDataFetcher:
             try:
                 garth.resume(self.session_dir)
                 _ = garth.client.username  # network call — validates token is alive
+                self.authenticated = True
+                log.info("Garmin session resumed successfully.")
+                return
             except Exception as e:
-                raise AuthenticationError(
-                    f"Stored tokens exist but are invalid or expired. "
-                    f"Re-bootstrap locally to refresh DB tokens. "
-                    f"Cause: {type(e).__name__}: {e}"
-                ) from e
-            self.authenticated = True
-            log.info("Garmin session resumed successfully.")
-            return
+                log.warning(
+                    "Session validation failed (%s: %s). Falling through to fresh login.",
+                    type(e).__name__, e
+                )
 
-        # Path B: no tokens in DB — first run or after manual token wipe
-        log.info("No tokens found in DB. Performing fresh login with MFA.")
+        log.info("Performing fresh login with MFA.")
 
         def mfa_callback() -> str:
             log.info("Waiting 15s for MFA email delivery...")
