@@ -97,8 +97,6 @@ class WeeklySyncPipeline:
                 )
                 pipeline_status["insights_ok"] = True
 
-                # Email disabled — was sending weekly insights on every daily run.
-                # TODO: re-enable when moved to a true weekly-only schedule.
                 log.info("Step 5/5: Email notification SKIPPED (disabled)")
                 pipeline_status["email_ok"] = True
             else:
@@ -108,8 +106,8 @@ class WeeklySyncPipeline:
         except Exception as e:
             pipeline_status["analysis_status"] = "failed"
             pipeline_status["degraded_reasons"] = ["pipeline_exception"]
-            log.error("Pipeline failed: %s", e)
-            traceback.print_exc()
+            log.error("Pipeline failed: %s", e, exc_info=True)
+            raise
         finally:
             pipeline_status["run_finished_at"] = datetime.utcnow().isoformat() + "Z"
             pipeline_status["overall_status"] = self._overall_status(pipeline_status)
@@ -125,10 +123,9 @@ class WeeklySyncPipeline:
         return pipeline_status["overall_status"] != "failed"
 
     def _fetch_data(self):
-        """Fetch Garmin data and write to PostgreSQL."""
+        """Fetch Garmin data and write to PostgreSQL. Raises on any failure."""
         fetcher = EnhancedGarminDataFetcher()
-        if not fetcher.authenticate():
-            raise RuntimeError("Garmin authentication failed")
+        fetcher.authenticate()
         counts = fetcher.fetch_and_store(days=self.fetch_days)
         training = fetcher.classify_training_intensity()
 
@@ -139,10 +136,9 @@ class WeeklySyncPipeline:
             counts.get("bb_events", 0),
         )
 
-        if training:
-            for d in sorted(training.keys()):
-                info = training[d]
-                log.info("%s: %s (%d min hard)", d, info["intensity"], info["hard_minutes"])
+        for d in sorted(training.keys()):
+            info = training[d]
+            log.info("%s: %s (%d min hard)", d, info["intensity"], info["hard_minutes"])
 
         return counts, training
 
@@ -193,8 +189,6 @@ class WeeklySyncPipeline:
         conn.autocommit = True
         cur = conn.cursor()
 
-        # Schema is managed by migrations.py ensure_startup_schema()
-
         cur.execute(
             """
             SELECT
@@ -241,13 +235,8 @@ class WeeklySyncPipeline:
             """,
             (
                 week_start,
-                stats[0],
-                stats[1],
-                stats[2],
-                stats[3],
-                stats[4],
-                stats[5],
-                stats[6],
+                stats[0], stats[1], stats[2], stats[3], stats[4],
+                stats[5], stats[6],
                 activity_count,
                 insights,
                 concise,
@@ -261,7 +250,6 @@ class WeeklySyncPipeline:
         log.info("Insights saved for week %s with analysis_status=%s", week_start, analysis_status)
 
     def _send_email(self, insights: str) -> bool:
-        """Send weekly recommendations email."""
         try:
             week_start = date.today() - timedelta(days=date.today().weekday())
             send_weekly_email(insights, week_date=week_start)
@@ -295,7 +283,6 @@ class WeeklySyncPipeline:
             log.warning("Failed to write pipeline status file: %s", e)
 
     def _print_summary(self, counts: Dict[str, Any], insights: str, status: Dict[str, Any]):
-        """Print execution summary."""
         log.info("SYNC SUMMARY:")
         if counts:
             log.info("  Daily rows:  %d", counts.get("daily_metrics", 0))
@@ -311,4 +298,3 @@ class WeeklySyncPipeline:
         preview = str(insights)[:500]
         log.info("AI INSIGHTS (preview): %s...", preview)
         log.info("Full insights saved to database")
-
