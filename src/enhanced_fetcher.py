@@ -160,23 +160,6 @@ class EnhancedGarminDataFetcher:
         mail.logout()
         raise MFAError("MFA code not found in recent Garmin emails.")
 
-    def _restore_session_from_db(self) -> int:
-        log.info("Attempting session restoration from database...")
-        with psycopg2.connect(self.conn_str, sslmode="require") as conn:
-            with conn.cursor() as cur:
-                Path(self.session_dir).mkdir(parents=True, exist_ok=True)
-                restored = 0
-                for key, fname in [
-                    ("garth_oauth2_token", "oauth2_token.json"),
-                    ("garth_oauth1_token", "oauth1_token.json"),
-                ]:
-                    cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
-                    row = cur.fetchone()
-                    if row:
-                        (Path(self.session_dir) / fname).write_text(row[0])
-                        restored += 1
-                return restored
-
     def _persist_session_to_db(self) -> None:
         log.info("Persisting fresh session to database...")
         with psycopg2.connect(self.conn_str, sslmode="require") as conn:
@@ -197,32 +180,10 @@ class EnhancedGarminDataFetcher:
 
     def authenticate(self) -> None:
         """
-        Sequential auth paths:
-
-        Path A — tokens exist in DB:
-            Restore tokens to disk -> garth.resume() -> validate with network call.
-            On failure: log the exact error and fall through to Path B.
-
-        Path B — fresh login with MFA:
-            Triggered when no tokens in DB, or when Path A validation failed.
-            On success: persist new tokens to DB.
-            On failure: raises AuthenticationError.
+        Always performs a fresh login with credentials + MFA.
+        On success, persists the new tokens to DB for future use.
+        On failure, raises AuthenticationError with the exact cause.
         """
-        token_count = self._restore_session_from_db()
-
-        if token_count > 0:
-            try:
-                garth.resume(self.session_dir)
-                _ = garth.client.username  # network call — validates token is alive
-                self.authenticated = True
-                log.info("Garmin session resumed successfully.")
-                return
-            except Exception as e:
-                log.warning(
-                    "Session validation failed (%s: %s). Falling through to fresh login.",
-                    type(e).__name__, e
-                )
-
         log.info("Performing fresh login with MFA.")
 
         def mfa_callback() -> str:
